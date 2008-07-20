@@ -161,13 +161,14 @@ int main(int argc, char **argv) {
 	pipewrite = pipefds[1];
 
 	/* Build an array to hold the remaining command-line parameters to send to atc. */
-	argarray = malloc(sizeof(*argarray) * (argc - optind + 1));
+	argarray = malloc(sizeof(*argarray) * (argc - optind + 2));
 	if (!argarray) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}
-	memcpy(argarray, argv + optind, (argc - optind) * sizeof(char *));
-	argarray[argc - optind] = 0;
+	argarray[0] = "atc";
+	memcpy(argarray + 1, argv + optind, (argc - optind) * sizeof(char *));
+	argarray[argc - optind + 1] = 0;
 
 	/* Set up the handler for SIGINT and SIGCHLD. */
 	sigact.sa_handler = &sig_handler;
