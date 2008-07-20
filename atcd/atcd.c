@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <pwd.h>
 #include "auth.h"
 #include "../shared/sockpath.h"
 
@@ -25,6 +26,9 @@ static const struct option longopts[] = {
 static const char shortopts[] = "a:S:";
 
 static pid_t cpid;
+
+static int *talkfds = 0;
+static size_t talkfds_count = 0;
 
 
 
@@ -42,6 +46,41 @@ static void sig_handler(int signum) {
 		/* Die when the child dies. */
 		_exit(EXIT_SUCCESS);
 	}
+}
+
+
+
+static int send_chat(const char *msg, uid_t sender) {
+	struct passwd *pw;
+	char buffer[1024];
+	size_t i;
+
+	/* Look up the username of the sender. */
+	errno = 0;
+	pw = getpwuid(sender);
+	if (!pw) {
+		if (!errno)
+			errno = ENOENT;
+		return -1;
+	}
+
+	/* Check that we have enough space. */
+	if (1 /* "<" */ + strlen(pw->pw_name) + 2 /* "> " */ + strlen(msg) - 1 /* remove slash */ + 1 /* NUL */ > sizeof(buffer)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+
+	/* Stage the message. */
+	strcpy(buffer, "<");
+	strcat(buffer, pw->pw_name);
+	strcat(buffer, "> ");
+	strcat(buffer, msg + 1);
+
+	/* Send the message to all connected clients. */
+	for (i = 0; i < talkfds_count; i++)
+		send(talkfds[i], buffer, strlen(buffer), MSG_EOR);
+
+	return 0;
 }
 
 
@@ -78,8 +117,16 @@ static int run_socket_once(const char *appname, int sockfd, int pipefd) {
 	}
 
 	/* Check for an acceptable UID. */
-	if (auth_check_uid(((struct ucred *) CMSG_DATA(cmsg))->uid) < 0) {
+	if (auth_check_uid(((const struct ucred *) CMSG_DATA(cmsg))->uid) < 0) {
 		return -1;
+	}
+
+	/* Check if we received a chat message. */
+	if (databuf[0] == '/') {
+		if (ret < sizeof(databuf)) {
+			databuf[ret] = '\0';
+			return send_chat(databuf, ((const struct ucred *) CMSG_DATA(cmsg))->uid);
+		}
 	}
 
 	/* Dump the received data into the pipe. */
@@ -101,8 +148,8 @@ static int run_socket_once(const char *appname, int sockfd, int pipefd) {
 
 
 static int run_parent(const char *appname, int listenfd, int pipefd) {
-	int *talkfds = 0, *newtalkfds, maxfd, newfd, optval;
-	size_t talkfds_count = 0, i;
+	int *newtalkfds, maxfd, newfd, optval;
+	size_t i;
 	fd_set rfds, efds;
 
 	for (;;) {

@@ -10,6 +10,12 @@
 
 
 
+static char current_input[1024] = "";
+
+static WINDOW *chatwin, *inputwin;
+
+
+
 static void safe_endwin(void) {
 	int saved_errno = errno;
 	endwin();
@@ -46,76 +52,145 @@ static ssize_t dosend(int sockfd, const char *buffer, size_t length) {
 
 
 
-static int run(const char *appname, int sockfd) {
-	char current_input[1024] = "", new_input[1024], output[1024];
+static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
+	char new_input[1024], output[2048];
 	int ch, terminal;
 
+	/* Get a character. */
+	ch = wgetch(inputwin);
+
+	/* See what it is. */
+	if (ch == 4) {
+		/* Control-D -> terminate */
+		endwin();
+		*exitcode = EXIT_SUCCESS;
+		return -1;
+	} else if (ch == 12) {
+		/* Control-L -> refresh screen -> send immediately */
+		output[0] = 12;
+		if (dosend(sockfd, output, 1) < 0) {
+			safe_endwin();
+			perror(appname);
+			*exitcode = EXIT_FAILURE;
+			return -1;
+		}
+	} else if (ch == ' ' && current_input[0] != '/') {
+		/* Space -> could be used at the termination of the game -> send immediately */
+		output[0] = ' ';
+		if (dosend(sockfd, output, 1) < 0) {
+			safe_endwin();
+			perror(appname);
+			*exitcode = EXIT_FAILURE;
+			return -1;
+		}
+	} else if (ch == '\r' || ch == KEY_ENTER) {
+		/* Enter -> send only if our current input is terminal */
+		if ((current_input[0] == '/' && current_input[1] != '\0') || (parse_command(current_input, output, sizeof(output), &terminal) == 0 && terminal)) {
+			/* Don't send the newline for chat messages. */
+			if (current_input[0] != '/')
+				strcat(current_input, "\r\n");
+			if (dosend(sockfd, current_input, strlen(current_input)) < 0) {
+				safe_endwin();
+				perror(appname);
+				*exitcode = EXIT_FAILURE;
+				return -1;
+			}
+			current_input[0] = '\0';
+			wprintw(inputwin, "\r");
+			wclrtoeol(inputwin);
+			wrefresh(inputwin);
+		}
+	} else if (ch == KEY_BACKSPACE || ch == 8 || ch == 127) {
+		/* Backspace -> if current input nonempty then remove last char */
+		if (current_input[0] != '\0') {
+			current_input[strlen(current_input) - 1] = '\0';
+			if (current_input[0] == '/') {
+				strcpy(output, "chat: ");
+				strcat(output, current_input + 1);
+			} else {
+				parse_command(current_input, output, sizeof(output), &terminal);
+			}
+			wprintw(inputwin, "\r%s", output);
+			wclrtoeol(inputwin);
+			wrefresh(inputwin);
+		}
+	} else if (ch == 27) {
+		/* Escape -> clear the current input buffer */
+		current_input[0] = '\0';
+		waddstr(inputwin, "\r");
+		wclrtoeol(inputwin);
+		wrefresh(inputwin);
+	} else if (ch != ERR && strlen(current_input) + 2 < sizeof(current_input)) {
+		/* Otherwise see if it's syntactically valid to add to our command buffer. */
+		strcpy(new_input, current_input);
+		output[0] = ch;
+		output[1] = '\0';
+		strcat(new_input, output);
+		if (new_input[0] == '/' || parse_command(new_input, output, sizeof(output), &terminal) == 0) {
+			strcpy(current_input, new_input);
+			if (current_input[0] == '/') {
+				strcpy(output, "chat: ");
+				strcat(output, current_input + 1);
+			}
+			waddstr(inputwin, "\r");
+			waddstr(inputwin, output);
+			wclrtoeol(inputwin);
+			wrefresh(inputwin);
+		}
+	}
+
+	return 0;
+}
+
+
+
+static int run_socket_one(const char *appname, int sockfd, int *exitcode) {
+	char buffer[1024];
+	ssize_t ret;
+
+	/* Read the packet from the socket. */
+	ret = read(sockfd, buffer, sizeof(buffer));
+	if (ret < 0) {
+		safe_endwin();
+		perror(appname);
+		*exitcode = EXIT_FAILURE;
+		return -1;
+	} else if (ret == 0) {
+		endwin();
+		*exitcode = EXIT_SUCCESS;
+		return -1;
+	}
+	buffer[ret] = '\0';
+
+	/* Output the message. */
+	waddstr(chatwin, buffer);
+	waddstr(chatwin, "\n");
+	wrefresh(chatwin);
+	return 0;
+}
+
+
+
+static int run(const char *appname, int sockfd) {
+	fd_set rfds;
+	int exitcode;
+
 	for (;;) {
-		/* Get a character. */
-		ch = getch();
-		if (ch == ERR) {
+		FD_ZERO(&rfds);
+		FD_SET(0 /* stdin */, &rfds);
+		FD_SET(sockfd, &rfds);
+		if (select(sockfd + 1, &rfds, 0, 0, 0) < 0) {
 			safe_endwin();
 			perror(appname);
 			return EXIT_FAILURE;
 		}
 
-		/* See what it is. */
-		if (ch == 4) {
-			/* Control-D -> terminate */
-			endwin();
-			return EXIT_SUCCESS;
-		} else if (ch == 12) {
-			/* Control-L -> refresh screen -> send immediately */
-			new_input[0] = 12;
-			if (dosend(sockfd, new_input, 1) < 0) {
-				safe_endwin();
-				perror(appname);
-				return EXIT_FAILURE;
-			}
-		} else if (ch == ' ') {
-			/* Space -> could be used at the termination of the game -> send immediately */
-			new_input[0] = ' ';
-			if (dosend(sockfd, new_input, 1) < 0) {
-				safe_endwin();
-				perror(appname);
-				return EXIT_FAILURE;
-			}
-		} else if (ch == '\r' || ch == KEY_ENTER) {
-			/* Enter -> send only if our current input is terminal */
-			if (parse_command(current_input, output, sizeof(output), &terminal) == 0 && terminal) {
-				strcat(current_input, "\r\n");
-				if (dosend(sockfd, current_input, strlen(current_input)) < 0) {
-					safe_endwin();
-					perror(appname);
-					return EXIT_FAILURE;
-				}
-				current_input[0] = '\0';
-				printw("\r");
-				clrtoeol();
-				refresh();
-			}
-		} else if (ch == KEY_BACKSPACE || ch == 8 || ch == 127) {
-			/* Backspace -> if current input nonempty then remove last char */
-			if (current_input[0] != '\0') {
-				current_input[strlen(current_input) - 1] = '\0';
-				parse_command(current_input, output, sizeof(output), &terminal);
-				printw("\r%s", output);
-				clrtoeol();
-				refresh();
-			}
-		} else {
-			/* Otherwise see if it's syntactically valid to add to our command buffer. */
-			strcpy(new_input, current_input);
-			output[0] = ch;
-			output[1] = '\0';
-			strcat(new_input, output);
-			if (parse_command(new_input, output, sizeof(output), &terminal) == 0) {
-				strcpy(current_input, new_input);
-				printw("\r%s", output);
-				clrtoeol();
-				refresh();
-			}
-		}
+		if (FD_ISSET(0, &rfds))
+			if (run_stdin_one(appname, sockfd, &exitcode) < 0)
+				return exitcode;
+		if (FD_ISSET(sockfd, &rfds))
+			if (run_socket_one(appname, sockfd, &exitcode) < 0)
+				return exitcode;
 	}
 }
 
@@ -171,6 +246,11 @@ int main(int argc, char **argv) {
 	nonl();
 	intrflush(stdscr, 0);
 	keypad(stdscr, 1);
+	timeout(0);
+	chatwin = newwin(LINES - 1, 0, 0, 0);
+	inputwin = newwin(0, 0, LINES - 1, 0);
+	scrollok(chatwin, 1);
+	idlok(chatwin, 1);
 
 	/* Run the application. */
 	return run(argv[0], sockfd);
