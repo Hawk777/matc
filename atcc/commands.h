@@ -1,8 +1,10 @@
 #if !defined COMMANDS_H
 #define COMMANDS_H
 
-/* Attempts to parse the command string. Returns the textual description on success, 0 on failure. On success, sets *terminal to 1 if the command is finished and can be submitted, 0 if it's valid so far but not finished. */
-const char *parse_command(const char *cmd, int *terminal);
+#include <stddef.h>
+
+/* Attempts to parse the command string. On failure, returns -1. On success, stores textual description into buffer (of size buflen), sets *terminal=1 if the string is terminal or 0 if the string is syntactically valid but not finished, and returns 0. */
+int parse_command(const char *cmd, char *buffer, size_t buflen, int *terminal);
 
 #endif
 

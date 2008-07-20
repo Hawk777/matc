@@ -250,33 +250,39 @@ static const struct fragment *find_fragment(const struct fragment * const *fragl
 
 
 
-static char command_buffer[1024];
-const char *parse_command(const char *readptr, int *terminal) {
+int parse_command(const char *readptr, char *writeptr, size_t writelen, int *terminal) {
 	const struct fragment * const *fraglist = root;
 	const struct fragment *fragptr = 0;
 
+	/* An empty buffer is considered an error. */
+	if (!writelen)
+		return -1;
+
 	/* An empty string is actually considered acceptable and terminal. */
-	if (*readptr) {
+	*writeptr = '\0';
+	if (!*readptr) {
 		*terminal = 1;
-		return "";
+		return 0;
 	}
 
 	/* Iterate the characters in the input. */
-	command_buffer[0] = '\0';
 	while (*readptr) {
 		/* Given the current set of acceptable fragment lists, try to find a fragment matching the input char. */
 		fragptr = find_fragment(fraglist, *readptr++);
 		/* If we didn't find any such fragment, give up. */
 		if (!fragptr)
-			return 0;
+			return -1;
+		/* If there's not enough buffer space left, give up. */
+		if (strlen(writeptr) + strlen(fragptr->output) + 1 > writelen)
+			return -1;
 		/* Append the found fragment's description to the output buffer. */
-		strcat(command_buffer, fragptr->output);
+		strcat(writeptr, fragptr->output);
 		/* Look for the next character in the followers list of the found fragment. */
 		fraglist = fragptr->followers;
 	}
 
 	/* We got to the end of the input, which means we're successful. */
 	*terminal = fragptr->terminal;
-	return command_buffer;
+	return 0;
 }
 

@@ -1,5 +1,4 @@
 #define _GNU_SOURCE
-#include "auth.h"
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
@@ -11,8 +10,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <pwd.h>
 #include <sys/wait.h>
+#include "auth.h"
+#include "../shared/sockpath.h"
 
 
 
@@ -42,31 +42,6 @@ static void sig_handler(int signum) {
 		/* Die when the child dies. */
 		_exit(EXIT_SUCCESS);
 	}
-}
-
-
-
-static int make_default_socket_path(struct sockaddr_un *saddr) {
-	struct passwd *pwd;
-
-	/* Get the /etc/passwd entry for the current user. */
-	errno = 0;
-	pwd = getpwuid(getuid());
-	if (!pwd) {
-		if (!errno)
-			errno = ENOENT;
-		return -1;
-	}
-
-	/* Check that homedir + "/.atcd-sock" will fit in the buffer. */
-	if (strlen(pwd->pw_dir) + strlen("/.atcd-sock") + 1 > sizeof(saddr->sun_path)) {
-		errno = ENAMETOOLONG;
-		return -1;
-	}
-
-	/* Build the path. */
-	sprintf(saddr->sun_path, "%s/.atcd-sock", pwd->pw_dir);
-	return 0;
 }
 
 
@@ -139,7 +114,7 @@ int main(int argc, char **argv) {
 	}
 
 	/* Make the default socket path. */
-	if (make_default_socket_path(&saddr) < 0) {
+	if (sockpath_set_default(&saddr) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}
