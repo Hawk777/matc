@@ -46,52 +46,123 @@ static void sig_handler(int signum) {
 
 
 
-static int run_parent(const char *appname, int sockfd, int pipefd) {
+static int run_socket_once(const char *appname, int sockfd, int pipefd) {
 	char databuf[1024], auxbuf[256];
 	struct iovec iov;
 	struct msghdr msg;
 	struct cmsghdr *cmsg;
 	ssize_t ret;
 
-	/* We make an endless loop reading from the socket and writing to the pipe.
-	 * We also verify the UID of each packet before passing it to the pipe. */
-	for (;;) {
-		/* Receive a message. */
-		iov.iov_base = databuf;
-		iov.iov_len = sizeof(databuf);
-		msg.msg_name = 0;
-		msg.msg_namelen = 0;
-		msg.msg_iov = &iov;
-		msg.msg_iovlen = 1;
-		msg.msg_control = auxbuf;
-		msg.msg_controllen = sizeof(auxbuf);
-		msg.msg_flags = 0;
-		ret = recvmsg(sockfd, &msg, 0);
+	/* Receive a message. */
+	iov.iov_base = databuf;
+	iov.iov_len = sizeof(databuf);
+	msg.msg_name = 0;
+	msg.msg_namelen = 0;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = auxbuf;
+	msg.msg_controllen = sizeof(auxbuf);
+	msg.msg_flags = 0;
+	ret = recvmsg(sockfd, &msg, 0);
+	if (ret < 0) {
+		perror(appname);
+		return -1;
+	} else if (ret == 0) {
+		return -1;
+	}
+
+	/* Scan the ancillary buffer to find the passed credential structure. */
+	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg && !(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS); cmsg = CMSG_NXTHDR(&msg, cmsg));
+	if (!cmsg) {
+		return -1;
+	}
+
+	/* Check for an acceptable UID. */
+	if (auth_check_uid(((struct ucred *) CMSG_DATA(cmsg))->uid) < 0) {
+		return -1;
+	}
+
+	/* Dump the received data into the pipe. */
+	iov.iov_base = databuf;
+	iov.iov_len = ret;
+	while (iov.iov_len) {
+		ret = writev(pipefd, &iov, 1);
 		if (ret < 0) {
 			perror(appname);
-			continue;
+			return -1;
+		}
+		iov.iov_base += ret;
+		iov.iov_len -= ret;
+	}
+
+	return 0;
+}
+
+
+
+static int run_parent(const char *appname, int listenfd, int pipefd) {
+	int *talkfds = 0, *newtalkfds, maxfd, newfd, optval;
+	size_t talkfds_count = 0, i;
+	fd_set rfds, efds;
+
+	for (;;) {
+		/* Select on the talkfds plus the listenfd. */
+		FD_ZERO(&rfds);
+		FD_ZERO(&efds);
+		FD_SET(listenfd, &rfds);
+		FD_SET(listenfd, &efds);
+		maxfd = listenfd;
+		for (i = 0; i < talkfds_count; i++) {
+			FD_SET(talkfds[i], &rfds);
+			FD_SET(talkfds[i], &efds);
+			if (talkfds[i] > maxfd)
+				maxfd = talkfds[i];
+		}
+		if (select(maxfd + 1, &rfds, 0, &efds, 0) < 0) {
+			perror(appname);
+			return EXIT_FAILURE;
 		}
 
-		/* Scan the ancillary buffer to find the passed credential structure. */
-		for (cmsg = CMSG_FIRSTHDR(&msg); cmsg && !(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS); cmsg = CMSG_NXTHDR(&msg, cmsg));
-		if (!cmsg)
-			continue;
-
-		/* Check for an acceptable UID. */
-		if (auth_check_uid(((struct ucred *) CMSG_DATA(cmsg))->uid) < 0)
-			continue;
-
-		/* Dump the received data into the pipe. */
-		iov.iov_base = databuf;
-		iov.iov_len = ret;
-		while (iov.iov_len) {
-			ret = writev(pipefd, &iov, 1);
-			if (ret < 0) {
-				perror(appname);
-				continue;
+		/* Walk through the talkfds, checking if each one is ready. */
+		for (i = 0; i < talkfds_count; i++) {
+			if (FD_ISSET(talkfds[i], &efds)) {
+				/* Exception occurred. Close the socket. */
+				close(talkfds[i]);
+				memmove(talkfds + i, talkfds + i + 1, talkfds_count - i - 1);
+				talkfds_count--;
+				i--;
+			} else if (FD_ISSET(talkfds[i], &rfds)) {
+				/* Readable. Run the socket. */
+				if (run_socket_once(appname, talkfds[i], pipefd) < 0) {
+					close(talkfds[i]);
+					memmove(talkfds + i, talkfds + i + 1, talkfds_count - i - 1);
+					talkfds_count--;
+					i--;
+				}
 			}
-			iov.iov_base += ret;
-			iov.iov_len -= ret;
+		}
+
+		/* Check if we have any new connections to accept. */
+		if (FD_ISSET(listenfd, &rfds)) {
+			newfd = accept(listenfd, 0, 0);
+			if (newfd < 0) {
+				perror(appname);
+				return EXIT_FAILURE;
+			} else {
+				optval = 1;
+				if (setsockopt(newfd, SOL_SOCKET, SO_PASSCRED, &optval, sizeof(optval)) < 0) {
+					perror(appname);
+					return EXIT_FAILURE;
+				}
+				newtalkfds = realloc(talkfds, (talkfds_count + 1) * sizeof(*talkfds));
+				if (!newtalkfds) {
+					perror(appname);
+					return EXIT_FAILURE;
+				} else {
+					talkfds = newtalkfds;
+					talkfds[talkfds_count++] = newfd;
+				}
+			}
 		}
 	}
 }
@@ -185,19 +256,18 @@ int main(int argc, char **argv) {
 	}
 
 	/* Create and initialize the socket. */
-	sockfd = socket(PF_UNIX, SOCK_DGRAM, 0);
+	sockfd = socket(PF_UNIX, SOCK_SEQPACKET, 0);
 	if (sockfd < 0) {
-		perror(argv[0]);
-		return EXIT_FAILURE;
-	}
-	ret = 1;
-	if (setsockopt(sockfd, SOL_SOCKET, SO_PASSCRED, &ret, sizeof(ret)) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}
 	unlink(saddr.sun_path);
 	saddr.sun_family = AF_UNIX;
 	if (bind(sockfd, (const struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
+		perror(argv[0]);
+		return EXIT_FAILURE;
+	}
+	if (listen(sockfd, 10) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}

@@ -41,7 +41,7 @@ static ssize_t dosend(int sockfd, const char *buffer, size_t length) {
 	((struct ucred *) CMSG_DATA(CMSG_FIRSTHDR(&msg)))->uid = getuid();
 	((struct ucred *) CMSG_DATA(CMSG_FIRSTHDR(&msg)))->gid = getgid();
 
-	return sendmsg(sockfd, &msg, MSG_NOSIGNAL);
+	return sendmsg(sockfd, &msg, MSG_NOSIGNAL | MSG_EOR);
 }
 
 
@@ -152,8 +152,8 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	/* Create a socket and lock its target. */
-	sockfd = socket(PF_UNIX, SOCK_DGRAM, 0);
+	/* Create a socket and connect to the server. */
+	sockfd = socket(PF_UNIX, SOCK_SEQPACKET, 0);
 	if (sockfd < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
