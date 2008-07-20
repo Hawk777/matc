@@ -94,7 +94,7 @@ static int run(const char *appname, int sockfd) {
 				clrtoeol();
 				refresh();
 			}
-		} else if (ch == KEY_BACKSPACE) {
+		} else if (ch == KEY_BACKSPACE || ch == 8 || ch == 127) {
 			/* Backspace -> if current input nonempty then remove last char */
 			if (current_input[0] != '\0') {
 				current_input[strlen(current_input) - 1] = '\0';
@@ -112,10 +112,6 @@ static int run(const char *appname, int sockfd) {
 			if (parse_command(new_input, output, sizeof(output), &terminal) == 0) {
 				strcpy(current_input, new_input);
 				printw("\r%s", output);
-				clrtoeol();
-				refresh();
-			} else {
-				printw("\r'%s' Does not parse.", new_input);
 				clrtoeol();
 				refresh();
 			}
