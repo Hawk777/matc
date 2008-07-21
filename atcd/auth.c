@@ -93,6 +93,38 @@ int auth_add_name(const char *name) {
 
 
 
+int auth_remove_uid(uid_t uid) {
+	size_t rd, wr;
+
+	/* Copy the array to itself, filtering out anything matching the target UID. */
+	for (rd = wr = 0; rd < allowed_count; rd++)
+		if (allowed[rd] != uid)
+			allowed[wr++] = uid;
+	allowed_count = wr;
+
+	return 0;
+}
+
+
+
+int auth_remove_name(const char *name) {
+	struct passwd *pwd;
+
+	/* Look up the name in /etc/passwd. */
+	errno = 0;
+	pwd = getpwnam(name);
+	if (!pwd) {
+		if (!errno)
+			errno = ENOENT;
+		return -1;
+	}
+
+	/* Remove the corresponding UID. */
+	return auth_remove_uid(pwd->pw_uid);
+}
+
+
+
 int auth_check_uid(uid_t uid) {
 	size_t i;
 
