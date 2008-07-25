@@ -356,6 +356,7 @@ static int run_parent(const char *appname, int listenfd, int pipefd) {
 
 int main(int argc, char **argv) {
 	int ret;
+	mode_t oldumask;
 	char **argarray;
 	int pipefds[2];
 	int piperead, pipewrite, sockfd;
@@ -432,10 +433,12 @@ int main(int argc, char **argv) {
 	}
 	unlink(saddr.sun_path);
 	saddr.sun_family = AF_UNIX;
+	oldumask = umask(0);
 	if (bind(sockfd, (const struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}
+	umask(oldumask);
 	if (listen(sockfd, 10) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
