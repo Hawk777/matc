@@ -24,10 +24,12 @@ static void safe_endwin(void) {
 
 
 
-static ssize_t dosend(int sockfd, const char *buffer, size_t length) {
+static int authenticate(int sockfd) {
 	struct msghdr msg;
 	struct iovec iov;
 	char cmsgbuf[CMSG_SPACE(sizeof(struct ucred))];
+	char buffer[1024];
+	ssize_t ret;
 
 	msg.msg_name = 0;
 	msg.msg_namelen = 0;
@@ -37,8 +39,8 @@ static ssize_t dosend(int sockfd, const char *buffer, size_t length) {
 	msg.msg_controllen = sizeof(cmsgbuf);
 	msg.msg_flags = 0;
 
-	iov.iov_base = (char *) buffer;
-	iov.iov_len = length;
+	iov.iov_base = "MATC 1";
+	iov.iov_len = strlen("MATC 1");
 
 	CMSG_FIRSTHDR(&msg)->cmsg_level = SOL_SOCKET;
 	CMSG_FIRSTHDR(&msg)->cmsg_type = SCM_CREDENTIALS;
@@ -47,7 +49,29 @@ static ssize_t dosend(int sockfd, const char *buffer, size_t length) {
 	((struct ucred *) CMSG_DATA(CMSG_FIRSTHDR(&msg)))->uid = getuid();
 	((struct ucred *) CMSG_DATA(CMSG_FIRSTHDR(&msg)))->gid = getgid();
 
-	return sendmsg(sockfd, &msg, MSG_NOSIGNAL | MSG_EOR);
+	if (sendmsg(sockfd, &msg, MSG_NOSIGNAL | MSG_EOR) < 0)
+		return -1;
+
+	ret = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
+	if (ret < 0)
+		return -1;
+	if (ret == 0) {
+		errno = ECONNRESET;
+		return -1;
+	}
+	buffer[ret] = '\0';
+	if (strcmp(buffer, "MATC VERSION") == 0) {
+		errno = EPROTONOSUPPORT;
+		return -1;
+	} else if (strcmp(buffer, "MATC ACCESS") == 0) {
+		errno = EACCES;
+		return -1;
+	} else if (strcmp(buffer, "MATC OK") != 0) {
+		errno = EPROTONOSUPPORT;
+		return -1;
+	}
+
+	return 0;
 }
 
 
@@ -68,7 +92,7 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 	} else if (ch == 12) {
 		/* Control-L -> refresh screen -> send immediately */
 		output[0] = 12;
-		if (dosend(sockfd, output, 1) < 0) {
+		if (send(sockfd, output, 1, MSG_EOR) < 0) {
 			safe_endwin();
 			perror(appname);
 			*exitcode = EXIT_FAILURE;
@@ -77,7 +101,7 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 	} else if (ch == ' ' && current_input[0] != '/') {
 		/* Space -> could be used at the termination of the game -> send immediately */
 		output[0] = ' ';
-		if (dosend(sockfd, output, 1) < 0) {
+		if (send(sockfd, output, 1, MSG_EOR) < 0) {
 			safe_endwin();
 			perror(appname);
 			*exitcode = EXIT_FAILURE;
@@ -85,11 +109,11 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		}
 	} else if (ch == '\r' || ch == KEY_ENTER) {
 		/* Enter -> send only if our current input is terminal */
-		if ((current_input[0] == '/' && current_input[1] != '\0') || (parse_command(current_input, output, sizeof(output), &terminal) == 0 && terminal)) {
+		if (parse_command(current_input, output, sizeof(output), &terminal) == 0 && terminal) {
 			/* Don't send the newline for chat messages. */
 			if (current_input[0] != '/')
 				strcat(current_input, "\r\n");
-			if (dosend(sockfd, current_input, strlen(current_input)) < 0) {
+			if (send(sockfd, current_input, strlen(current_input), MSG_EOR) < 0) {
 				safe_endwin();
 				perror(appname);
 				*exitcode = EXIT_FAILURE;
@@ -104,12 +128,7 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		/* Backspace -> if current input nonempty then remove last char */
 		if (current_input[0] != '\0') {
 			current_input[strlen(current_input) - 1] = '\0';
-			if (current_input[0] == '/') {
-				strcpy(output, "chat: ");
-				strcat(output, current_input + 1);
-			} else {
-				parse_command(current_input, output, sizeof(output), &terminal);
-			}
+			parse_command(current_input, output, sizeof(output), &terminal);
 			wprintw(inputwin, "\r%s", output);
 			wclrtoeol(inputwin);
 			wrefresh(inputwin);
@@ -126,12 +145,8 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		output[0] = ch;
 		output[1] = '\0';
 		strcat(new_input, output);
-		if (new_input[0] == '/' || parse_command(new_input, output, sizeof(output), &terminal) == 0) {
+		if (parse_command(new_input, output, sizeof(output), &terminal) == 0) {
 			strcpy(current_input, new_input);
-			if (current_input[0] == '/') {
-				strcpy(output, "chat: ");
-				strcat(output, current_input + 1);
-			}
 			waddstr(inputwin, "\r");
 			waddstr(inputwin, output);
 			wclrtoeol(inputwin);
@@ -235,6 +250,12 @@ int main(int argc, char **argv) {
 	}
 	saddr.sun_family = AF_UNIX;
 	if (connect(sockfd, (const struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
+		perror(argv[0]);
+		return EXIT_FAILURE;
+	}
+
+	/* Transmit an authentication/version-negotiation packet. */
+	if (authenticate(sockfd) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}

@@ -260,8 +260,18 @@ int parse_command(const char *readptr, char *writeptr, size_t writelen, int *ter
 
 	/* An empty string is actually considered acceptable and terminal. */
 	*writeptr = '\0';
-	if (!*readptr) {
+	if (readptr[0] == '\0') {
 		*terminal = 1;
+		return 0;
+	}
+
+	/* Check for a chat message. */
+	if (readptr[0] == '/') {
+		if (strlen(readptr + 1) + 6 /* "chat: " */ + 1 > writelen)
+			return -1;
+		strcpy(writeptr, "chat: ");
+		strcat(writeptr, readptr + 1);
+		*terminal = readptr[1] != '\0';
 		return 0;
 	}
 

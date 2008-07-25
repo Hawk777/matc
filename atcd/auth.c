@@ -46,10 +46,37 @@ static int grow_array(void) {
 
 
 
+/* Translates a string into a UID. Returns 0 on success, -1 on failure. */
+static int to_uid(const char *name, uid_t *uid) {
+	char *endptr;
+	struct passwd *pwd;
+
+	/* Try first translating it numerically. */
+	*uid = strtoul(name, &endptr, 10);
+	if (*endptr == '\0')
+		return 0;
+
+	/* Try translating it through /etc/passwd. */
+	pwd = getpwnam(name);
+	if (pwd) {
+		*uid = pwd->pw_uid;
+		return 0;
+	}
+
+	return -1;
+}
+
+
+
 int auth_init(void) {
 	/* Initialize the authentication library to allow one UID by default: ourself. */
 	auth_cleanup();
-	return auth_add_uid(getuid());
+	allowed = malloc(sizeof(*allowed));
+	if (!allowed)
+		return -1;
+	allowed_count = allowed_alloc = 1;
+	allowed[0] = getuid();
+	return 0;
 }
 
 
@@ -65,41 +92,34 @@ void auth_cleanup(void) {
 
 
 
-int auth_add_uid(uid_t uid) {
+int auth_add(const char *name) {
+	uid_t uid;
+
+	/* Translate to UID. */
+	if (to_uid(name, &uid) < 0)
+		return -1;
+
+	/* Add to array. */
 	if (grow_array() < 0)
 		return -1;
 	allowed[allowed_count++] = uid;
-
 	return 0;
 }
 
 
 
-int auth_add_name(const char *name) {
-	struct passwd *pwd;
-
-	/* Look up the name in /etc/passwd. */
-	errno = 0;
-	pwd = getpwnam(name);
-	if (!pwd) {
-		if (!errno)
-			errno = ENOENT;
-		return -1;
-	}
-
-	/* Add the corresponding UID. */
-	return auth_add_uid(pwd->pw_uid);
-}
-
-
-
-int auth_remove_uid(uid_t uid) {
+int auth_remove(const char *name) {
+	uid_t uid;
 	size_t rd, wr;
+
+	/* Translate to UID. */
+	if (to_uid(name, &uid) < 0)
+		return -1;
 
 	/* Copy the array to itself, filtering out anything matching the target UID. */
 	for (rd = wr = 0; rd < allowed_count; rd++)
 		if (allowed[rd] != uid)
-			allowed[wr++] = uid;
+			allowed[wr++] = allowed[rd];
 	allowed_count = wr;
 
 	return 0;
@@ -107,25 +127,7 @@ int auth_remove_uid(uid_t uid) {
 
 
 
-int auth_remove_name(const char *name) {
-	struct passwd *pwd;
-
-	/* Look up the name in /etc/passwd. */
-	errno = 0;
-	pwd = getpwnam(name);
-	if (!pwd) {
-		if (!errno)
-			errno = ENOENT;
-		return -1;
-	}
-
-	/* Remove the corresponding UID. */
-	return auth_remove_uid(pwd->pw_uid);
-}
-
-
-
-int auth_check_uid(uid_t uid) {
+int auth_check(uid_t uid) {
 	size_t i;
 
 	/* Scan the array. */
@@ -135,5 +137,12 @@ int auth_check_uid(uid_t uid) {
 
 	errno = EACCES;
 	return -1;
+}
+
+
+
+size_t auth_get_acl(uid_t **acl) {
+	*acl = allowed;
+	return allowed_count;
 }
 

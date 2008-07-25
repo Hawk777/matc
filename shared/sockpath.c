@@ -20,7 +20,7 @@ int sockpath_set_default(struct sockaddr_un *saddr) {
 
 	/* Build the path. */
 	strcpy(saddr->sun_path, homedir);
-	strcat(saddr->sun_path, "/.actd-sock");
+	strcat(saddr->sun_path, "/.atcd-sock");
 	return 0;
 }
 

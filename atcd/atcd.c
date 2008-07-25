@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <getopt.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -12,23 +13,32 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <pwd.h>
+#include <fcntl.h>
 #include "auth.h"
+#include "list.h"
 #include "../shared/sockpath.h"
 
 
 
 static const struct option longopts[] = {
-	{"allow", required_argument, 0, 'a'},
 	{"socket", required_argument, 0, 'S'},
 	{0, 0, 0, 0}
 };
 
-static const char shortopts[] = "a:S:";
+static const char shortopts[] = "S:";
 
 static pid_t cpid;
 
-static int *talkfds = 0;
-static size_t talkfds_count = 0;
+struct connection;
+struct connection {
+	int fd, debug;
+	uid_t user;
+	char *username;
+	struct list_node link;
+};
+
+static struct list_node connections = LIST_EMPTY_NODE(connections);
+static struct list_node pending = LIST_EMPTY_NODE(pending);
 
 
 
@@ -50,51 +60,112 @@ static void sig_handler(int signum) {
 
 
 
-static int send_chat(const char *msg, uid_t sender) {
-	struct passwd *pw;
-	char buffer[1024];
-	size_t i;
-
-	/* Look up the username of the sender. */
-	errno = 0;
-	pw = getpwuid(sender);
-	if (!pw) {
-		if (!errno)
-			errno = ENOENT;
-		return -1;
-	}
-
-	/* Check that we have enough space. */
-	if (1 /* "<" */ + strlen(pw->pw_name) + 2 /* "> " */ + strlen(msg) - 1 /* remove slash */ + 1 /* NUL */ > sizeof(buffer)) {
-		errno = ENAMETOOLONG;
-		return -1;
-	}
-
-	/* Stage the message. */
-	strcpy(buffer, "<");
-	strcat(buffer, pw->pw_name);
-	strcat(buffer, "> ");
-	strcat(buffer, msg + 1);
-
-	/* Send the message to all connected clients. */
-	for (i = 0; i < talkfds_count; i++)
-		send(talkfds[i], buffer, strlen(buffer), MSG_EOR);
-
-	return 0;
+static inline int set_socred(int fd, int enable) {
+	return setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &enable, sizeof(enable));
 }
 
 
 
-static int run_socket_once(const char *appname, int sockfd, int pipefd) {
-	char databuf[1024], auxbuf[256];
+static inline void send_one(const char *msg, const struct connection *conn) {
+	send(conn->fd, msg, strlen(msg), MSG_EOR);
+}
+
+static inline void send_some(const char *msg, int only_debug) {
+	struct list_node *cur, *prev;
+
+	list_for_each(connections, cur, prev)
+		if (!only_debug || list_entry(cur, struct connection, link)->debug)
+			send_one(msg, list_entry(cur, struct connection, link));
+}
+
+static inline void send_debug(const char *msg) {
+	send_some(msg, 1);
+}
+
+static inline void send_all(const char *msg) {
+	send_some(msg, 0);
+}
+
+static void send_chat(const char *msg, const struct connection *sender) {
+	char buffer[256];
+
+	/* Stage the message. */
+	snprintf(buffer, sizeof(buffer), "<%s> %s", sender->username, msg);
+
+	/* Send the message to all connected clients. */
+	send_all(buffer);
+}
+
+
+
+static void server_command(const char *command, struct connection *conn) {
+	if (strcmp(command, "help") == 0) {
+		send_one("[atcd] supported commands on this server are:", conn);
+		send_one("[atcd] help", conn);
+		send_one("[atcd] debug", conn);
+		send_one("[atcd] nodebug", conn);
+		send_one("[atcd] allow", conn);
+		send_one("[atcd] deny", conn);
+		send_one("[atcd] acl", conn);
+		send_one("[atcd] users", conn);
+	} else if (strcmp(command, "debug") == 0) {
+		conn->debug = 1;
+		send_one("[atcd] debug mode enabled", conn);
+	} else if (strcmp(command, "nodebug") == 0) {
+		conn->debug = 0;
+		send_one("[atcd] debug mode disabled", conn);
+	} else if (memcmp(command, "allow ", strlen("allow ")) == 0) {
+		if (auth_add(command + strlen("allow ")) < 0) {
+			send_one("[atcd] error", conn);
+		} else {
+			send_one("[atcd] OK", conn);
+		}
+	} else if (memcmp(command, "deny ", strlen("deny ")) == 0) {
+		if (auth_remove(command + strlen("deny ")) < 0) {
+			send_one("[atcd] error", conn);
+		} else {
+			send_one("[atcd] OK", conn);
+		}
+	} else if (strcmp(command, "acl") == 0) {
+		uid_t *uids;
+		size_t nuids, i;
+		struct passwd *pwd;
+		char buffer[256];
+		nuids = auth_get_acl(&uids);
+		for (i = 0; i < nuids; i++) {
+			pwd = getpwuid(uids[i]);
+			if (pwd)
+				snprintf(buffer, sizeof(buffer), "[atcd] %s", pwd->pw_name);
+			else
+				snprintf(buffer, sizeof(buffer), "[atcd] %u", uids[i]);
+			send_one(buffer, conn);
+		}
+	} else if (strcmp(command, "users") == 0) {
+		struct list_node *cur, *prev;
+		char buffer[256];
+		list_for_each(connections, cur, prev) {
+			snprintf(buffer, sizeof(buffer), "[atcd] %s", list_entry(cur, struct connection, link)->username);
+			send_one(buffer, conn);
+		}
+	} else {
+		send_one("[atcd] unknown command", conn);
+	}
+}
+
+
+
+static int run_pending_connection_once(const char *appname, struct connection *conn) {
+	char databuf[256], auxbuf[256];
 	struct iovec iov;
 	struct msghdr msg;
 	struct cmsghdr *cmsg;
 	ssize_t ret;
+	struct passwd *pwd;
+	const struct ucred *cred;
 
 	/* Receive a message. */
 	iov.iov_base = databuf;
-	iov.iov_len = sizeof(databuf);
+	iov.iov_len = sizeof(databuf) - 1;
 	msg.msg_name = 0;
 	msg.msg_namelen = 0;
 	msg.msg_iov = &iov;
@@ -102,44 +173,97 @@ static int run_socket_once(const char *appname, int sockfd, int pipefd) {
 	msg.msg_control = auxbuf;
 	msg.msg_controllen = sizeof(auxbuf);
 	msg.msg_flags = 0;
-	ret = recvmsg(sockfd, &msg, 0);
-	if (ret < 0) {
-		perror(appname);
+	ret = recvmsg(conn->fd, &msg, 0);
+	if (ret <= 0)
 		return -1;
-	} else if (ret == 0) {
-		return -1;
-	}
+	databuf[ret] = '\0';
 
 	/* Scan the ancillary buffer to find the passed credential structure. */
 	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg && !(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS); cmsg = CMSG_NXTHDR(&msg, cmsg));
 	if (!cmsg) {
+		send_debug("[atcd] user denied for no credentials transmitted");
+		send_one("MATC ACCESS", conn);
+		return -1;
+	}
+	cred = (const struct ucred *) CMSG_DATA(cmsg);
+
+	/* Disable credential passing from now on. */
+	if (set_socred(conn->fd, 0) < 0) {
+		return -1;
+	}
+
+	/* Look up the username. */
+	pwd = getpwuid(cred->uid);
+	if (!pwd) {
+		snprintf(databuf, sizeof(databuf), "[atcd] user denied for no passwd entry: %d", cred->uid);
+		send_debug(databuf);
+		send_one("MATC ACCESS", conn);
 		return -1;
 	}
 
 	/* Check for an acceptable UID. */
-	if (auth_check_uid(((const struct ucred *) CMSG_DATA(cmsg))->uid) < 0) {
+	if (auth_check(cred->uid) < 0) {
+		snprintf(databuf, sizeof(databuf), "[atcd] user denied by ACL: %s", pwd->pw_name);
+		send_debug(databuf);
+		send_one("MATC ACCESS", conn);
 		return -1;
 	}
 
+	/* Check for an acceptable protocol version. */
+	if (strcmp(databuf, "MATC 1") != 0) {
+		snprintf(databuf, sizeof(databuf), "[atcd] user denied for bad protocol version: %s", pwd->pw_name);
+		send_debug(databuf);
+		send_one("MATC VERSION", conn);
+		return -1;
+	}
+
+	/* Store a copy of the UID and username. */
+	conn->user = cred->uid;
+	conn->username = strdup(pwd->pw_name);
+	if (!conn->username) {
+		snprintf(databuf, sizeof(databuf), "[atcd] malloc failed saving username: %s", pwd->pw_name);
+		send_debug(databuf);
+		return -1;
+	}
+
+	/* Accept the new user! */
+	send_one("MATC OK", conn);
+	return 0;
+}
+
+
+
+static int run_connection_once(struct connection *conn, int pipefd) {
+	char databuf[256];
+	ssize_t ret;
+	char *ptr;
+	size_t left;
+
+	/* Receive a message. */
+	ret = recv(conn->fd, databuf, sizeof(databuf) - 1, 0);
+	if (ret <= 0)
+		return -1;
+	databuf[ret] = '\0';
+
 	/* Check if we received a chat message. */
 	if (databuf[0] == '/') {
-		if (ret < sizeof(databuf)) {
-			databuf[ret] = '\0';
-			return send_chat(databuf, ((const struct ucred *) CMSG_DATA(cmsg))->uid);
-		}
+		/* Check if it's actually a server command. */
+		if (databuf[1] == '/')
+			server_command(databuf + 2, conn);
+		else
+			send_chat(databuf + 1, conn);
+		return 0;
 	}
 
 	/* Dump the received data into the pipe. */
-	iov.iov_base = databuf;
-	iov.iov_len = ret;
-	while (iov.iov_len) {
-		ret = writev(pipefd, &iov, 1);
-		if (ret < 0) {
-			perror(appname);
+	ptr = databuf;
+	left = ret;
+	while (left) {
+		ret = write(pipefd, ptr, left);
+		if (ret < 0)
 			return -1;
-		}
-		iov.iov_base += ret;
-		iov.iov_len -= ret;
+		ptr += ret;
+		left -= ret;
 	}
 
 	return 0;
@@ -148,66 +272,80 @@ static int run_socket_once(const char *appname, int sockfd, int pipefd) {
 
 
 static int run_parent(const char *appname, int listenfd, int pipefd) {
-	int *newtalkfds, maxfd, newfd, optval;
-	size_t i;
-	fd_set rfds, efds;
+	int maxfd, newfd;
+	fd_set rfds;
+	struct list_node *prev, *cur;
+	struct connection *conn;
 
 	for (;;) {
-		/* Select on the talkfds plus the listenfd. */
+		/* Select on everything. */
 		FD_ZERO(&rfds);
-		FD_ZERO(&efds);
 		FD_SET(listenfd, &rfds);
-		FD_SET(listenfd, &efds);
 		maxfd = listenfd;
-		for (i = 0; i < talkfds_count; i++) {
-			FD_SET(talkfds[i], &rfds);
-			FD_SET(talkfds[i], &efds);
-			if (talkfds[i] > maxfd)
-				maxfd = talkfds[i];
+		list_for_each(connections, cur, prev) {
+			conn = list_entry(cur, struct connection, link);
+			FD_SET(conn->fd, &rfds);
+			if (conn->fd > maxfd)
+				maxfd = conn->fd;
 		}
-		if (select(maxfd + 1, &rfds, 0, &efds, 0) < 0) {
+		list_for_each(pending, cur, prev) {
+			conn = list_entry(cur, struct connection, link);
+			FD_SET(conn->fd, &rfds);
+			if (conn->fd > maxfd)
+				maxfd = conn->fd;
+		}
+		if (select(maxfd + 1, &rfds, 0, 0, 0) < 0) {
 			perror(appname);
 			return EXIT_FAILURE;
 		}
 
-		/* Walk through the talkfds, checking if each one is ready. */
-		for (i = 0; i < talkfds_count; i++) {
-			if (FD_ISSET(talkfds[i], &efds)) {
-				/* Exception occurred. Close the socket. */
-				close(talkfds[i]);
-				memmove(talkfds + i, talkfds + i + 1, talkfds_count - i - 1);
-				talkfds_count--;
-				i--;
-			} else if (FD_ISSET(talkfds[i], &rfds)) {
-				/* Readable. Run the socket. */
-				if (run_socket_once(appname, talkfds[i], pipefd) < 0) {
-					close(talkfds[i]);
-					memmove(talkfds + i, talkfds + i + 1, talkfds_count - i - 1);
-					talkfds_count--;
-					i--;
+		/* First check for any progress in the connected FDs. */
+		list_for_each(connections, cur, prev) {
+			conn = list_entry(cur, struct connection, link);
+			if (FD_ISSET(conn->fd, &rfds)) {
+				if (run_connection_once(conn, pipefd) < 0) {
+					list_del(cur, prev);
+					close(conn->fd);
+					free(conn->username);
+					free(conn);
 				}
 			}
 		}
 
-		/* Check if we have any new connections to accept. */
+		/* Next check for any progress in the pending FDs. */
+		list_for_each(pending, cur, prev) {
+			conn = list_entry(cur, struct connection, link);
+			if (FD_ISSET(conn->fd, &rfds)) {
+				list_del(cur, prev);
+				if (run_pending_connection_once(appname, conn) < 0) {
+					close(conn->fd);
+					free(conn);
+				} else {
+					list_add(cur, &connections);
+				}
+			}
+		}
+
+		/* Finally check if we have an incoming connection on the listener. */
 		if (FD_ISSET(listenfd, &rfds)) {
 			newfd = accept(listenfd, 0, 0);
-			if (newfd < 0) {
-				perror(appname);
-				return EXIT_FAILURE;
-			} else {
-				optval = 1;
-				if (setsockopt(newfd, SOL_SOCKET, SO_PASSCRED, &optval, sizeof(optval)) < 0) {
-					perror(appname);
-					return EXIT_FAILURE;
-				}
-				newtalkfds = realloc(talkfds, (talkfds_count + 1) * sizeof(*talkfds));
-				if (!newtalkfds) {
-					perror(appname);
-					return EXIT_FAILURE;
+			if (newfd >= 0) {
+				/* Enable credential-passing. */
+				if (set_socred(newfd, 1) < 0) {
+					close(newfd);
 				} else {
-					talkfds = newtalkfds;
-					talkfds[talkfds_count++] = newfd;
+					/* Allocate a new connection structure. */
+					conn = malloc(sizeof(*conn));
+					if (!conn) {
+						close(newfd);
+					} else {
+						/* Initialize the new connection and link it into the pending list. */
+						conn->fd = newfd;
+						conn->debug = 0;
+						conn->user = 0;
+						conn->username = 0;
+						list_add(&conn->link, &pending);
+					}
 				}
 			}
 		}
@@ -218,8 +356,7 @@ static int run_parent(const char *appname, int listenfd, int pipefd) {
 
 int main(int argc, char **argv) {
 	int ret;
-	unsigned long arg;
-	char *endptr, **argarray;
+	char **argarray;
 	int pipefds[2];
 	int piperead, pipewrite, sockfd;
 	struct sockaddr_un saddr;
@@ -240,21 +377,6 @@ int main(int argc, char **argv) {
 	/* Scan command-line options. */
 	while ((ret = getopt_long(argc, argv, shortopts, longopts, 0)) >= 0) {
 		switch (ret) {
-			case 'a':
-				arg = strtoul(optarg, &endptr, 10);
-				if (*endptr) {
-					if (auth_add_name(optarg) < 0) {
-						perror(argv[0]);
-						return EXIT_FAILURE;
-					}
-				} else {
-					if (auth_add_uid(arg) < 0) {
-						perror(argv[0]);
-						return EXIT_FAILURE;
-					}
-				}
-				break;
-
 			case 'S':
 				if (strlen(optarg) + 1 > sizeof(saddr.sun_path)) {
 					errno = ENAMETOOLONG;
