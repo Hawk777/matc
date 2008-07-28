@@ -141,7 +141,7 @@ int auth_check(uid_t uid) {
 
 
 
-size_t auth_get_acl(uid_t **acl) {
+size_t auth_get_acl(const uid_t **acl) {
 	*acl = allowed;
 	return allowed_count;
 }

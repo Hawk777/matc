@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stddef.h>
+#include <stdarg.h>
 #include <getopt.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -66,89 +67,79 @@ static inline int set_socred(int fd, int enable) {
 
 
 
-static inline void send_one(const char *msg, const struct connection *conn) {
-	send(conn->fd, msg, strlen(msg), MSG_EOR);
+static const struct connection CONN_ALL_IMPL, CONN_DEBUG_IMPL;
+static const struct connection * const CONN_ALL = &CONN_ALL_IMPL;
+static const struct connection * const CONN_DEBUG = &CONN_DEBUG_IMPL;
+static inline void clputs(const struct connection *conn, const char *string) {
+	const struct list_node *cur, *prev;
+
+	if (conn != CONN_ALL && conn != CONN_DEBUG) {
+		send(conn->fd, string, strlen(string), MSG_EOR);
+	} else {
+		list_for_each(connections, cur, prev)
+			if (conn == CONN_ALL || list_entry(cur, const struct connection, link)->debug)
+				clputs(list_entry(cur, const struct connection, link), string);
+	}
 }
 
-static inline void send_some(const char *msg, int only_debug) {
-	struct list_node *cur, *prev;
-
-	list_for_each(connections, cur, prev)
-		if (!only_debug || list_entry(cur, struct connection, link)->debug)
-			send_one(msg, list_entry(cur, struct connection, link));
-}
-
-static inline void send_debug(const char *msg) {
-	send_some(msg, 1);
-}
-
-static inline void send_all(const char *msg) {
-	send_some(msg, 0);
-}
-
-static void send_chat(const char *msg, const struct connection *sender) {
+static inline void clprintf(const struct connection *conn, const char *format, ...) {
+	va_list args;
 	char buffer[256];
 
-	/* Stage the message. */
-	snprintf(buffer, sizeof(buffer), "<%s> %s", sender->username, msg);
-
-	/* Send the message to all connected clients. */
-	send_all(buffer);
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	clputs(conn, buffer);
 }
 
 
 
 static void server_command(const char *command, struct connection *conn) {
 	if (strcmp(command, "help") == 0) {
-		send_one("[server] supported commands on this server are:", conn);
-		send_one("[server] help", conn);
-		send_one("[server] debug", conn);
-		send_one("[server] nodebug", conn);
-		send_one("[server] allow", conn);
-		send_one("[server] deny", conn);
-		send_one("[server] acl", conn);
-		send_one("[server] users", conn);
+		clputs(conn, "[server] supported commands on this server are:");
+		clputs(conn, "[server] help");
+		clputs(conn, "[server] debug");
+		clputs(conn, "[server] nodebug");
+		clputs(conn, "[server] allow");
+		clputs(conn, "[server] deny");
+		clputs(conn, "[server] acl");
+		clputs(conn, "[server] users");
 	} else if (strcmp(command, "debug") == 0) {
 		conn->debug = 1;
-		send_one("[server] debug mode enabled", conn);
+		clputs(conn, "[server] debug mode enabled");
 	} else if (strcmp(command, "nodebug") == 0) {
 		conn->debug = 0;
-		send_one("[server] debug mode disabled", conn);
+		clputs(conn, "[server] debug mode disabled");
 	} else if (memcmp(command, "allow ", strlen("allow ")) == 0) {
 		if (auth_add(command + strlen("allow ")) < 0) {
-			send_one("[server] error", conn);
+			clputs(conn, "[server] error");
 		} else {
-			send_one("[server] OK", conn);
+			clputs(conn, "[server] OK");
 		}
 	} else if (memcmp(command, "deny ", strlen("deny ")) == 0) {
 		if (auth_remove(command + strlen("deny ")) < 0) {
-			send_one("[server] error", conn);
+			clputs(conn, "[server] error");
 		} else {
-			send_one("[server] OK", conn);
+			clputs(conn, "[server] OK");
 		}
 	} else if (strcmp(command, "acl") == 0) {
-		uid_t *uids;
+		const uid_t *uids;
 		size_t nuids, i;
-		struct passwd *pwd;
-		char buffer[256];
+		const struct passwd *pwd;
 		nuids = auth_get_acl(&uids);
 		for (i = 0; i < nuids; i++) {
 			pwd = getpwuid(uids[i]);
 			if (pwd)
-				snprintf(buffer, sizeof(buffer), "[server] %s", pwd->pw_name);
+				clprintf(conn, "[server] %s", pwd->pw_name);
 			else
-				snprintf(buffer, sizeof(buffer), "[server] %u", uids[i]);
-			send_one(buffer, conn);
+				clprintf(conn, "[server] %u", uids[i]);
 		}
 	} else if (strcmp(command, "users") == 0) {
-		struct list_node *cur, *prev;
-		char buffer[256];
-		list_for_each(connections, cur, prev) {
-			snprintf(buffer, sizeof(buffer), "[server] %s", list_entry(cur, struct connection, link)->username);
-			send_one(buffer, conn);
-		}
+		const struct list_node *cur, *prev;
+		list_for_each(connections, cur, prev)
+			clprintf(conn, "[server] %s", list_entry(cur, const struct connection, link)->username);
 	} else {
-		send_one("[server] unknown command", conn);
+		clputs(conn, "[server] unknown command");
 	}
 }
 
@@ -181,8 +172,8 @@ static int run_pending_connection_once(const char *appname, struct connection *c
 	/* Scan the ancillary buffer to find the passed credential structure. */
 	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg && !(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS); cmsg = CMSG_NXTHDR(&msg, cmsg));
 	if (!cmsg) {
-		send_debug("[server] user denied for no credentials transmitted");
-		send_one("MATC ACCESS", conn);
+		clputs(CONN_DEBUG, "[server] user denied for no credentials transmitted");
+		clputs(conn, "MATC ACCESS");
 		return -1;
 	}
 	cred = (const struct ucred *) CMSG_DATA(cmsg);
@@ -195,25 +186,22 @@ static int run_pending_connection_once(const char *appname, struct connection *c
 	/* Look up the username. */
 	pwd = getpwuid(cred->uid);
 	if (!pwd) {
-		snprintf(databuf, sizeof(databuf), "[server] user denied for no passwd entry: %d", cred->uid);
-		send_debug(databuf);
-		send_one("MATC ACCESS", conn);
+		clprintf(CONN_DEBUG, "[server] user denied for no passwd entry: %d", cred->uid);
+		clputs(conn, "MATC ACCESS");
 		return -1;
 	}
 
 	/* Check for an acceptable UID. */
 	if (auth_check(cred->uid) < 0) {
-		snprintf(databuf, sizeof(databuf), "[server] user denied by ACL: %s", pwd->pw_name);
-		send_debug(databuf);
-		send_one("MATC ACCESS", conn);
+		clprintf(CONN_DEBUG, "[server] user denied by ACL: %s", pwd->pw_name);
+		clputs(conn, "MATC ACCESS");
 		return -1;
 	}
 
 	/* Check for an acceptable protocol version. */
 	if (strcmp(databuf, "MATC 1") != 0) {
-		snprintf(databuf, sizeof(databuf), "[server] user denied for bad protocol version: %s", pwd->pw_name);
-		send_debug(databuf);
-		send_one("MATC VERSION", conn);
+		clprintf(CONN_DEBUG, "[server] user denied for bad protocol version: %s", pwd->pw_name);
+		clputs(conn, "MATC VERSION");
 		return -1;
 	}
 
@@ -221,13 +209,16 @@ static int run_pending_connection_once(const char *appname, struct connection *c
 	conn->user = cred->uid;
 	conn->username = strdup(pwd->pw_name);
 	if (!conn->username) {
-		snprintf(databuf, sizeof(databuf), "[server] malloc failed saving username: %s", pwd->pw_name);
-		send_debug(databuf);
+		clprintf(CONN_DEBUG, "[server] strdup failed saving username: %s", pwd->pw_name);
 		return -1;
 	}
 
 	/* Accept the new user! */
-	send_one("MATC OK", conn);
+	clputs(conn, "MATC OK");
+
+	/* Announce their arrival. */
+	clprintf(CONN_ALL, "[server] %s has entered the game", conn->username);
+
 	return 0;
 }
 
@@ -251,7 +242,7 @@ static int run_connection_once(struct connection *conn, int pipefd) {
 		if (databuf[1] == '/')
 			server_command(databuf + 2, conn);
 		else
-			send_chat(databuf + 1, conn);
+			clprintf(CONN_ALL, "<%s> %s", conn->username, databuf + 1);
 		return 0;
 	}
 
@@ -306,6 +297,7 @@ static int run_parent(const char *appname, int listenfd, int pipefd) {
 				if (run_connection_once(conn, pipefd) < 0) {
 					list_del(cur, prev);
 					close(conn->fd);
+					clprintf(CONN_ALL, "[server] %s has exited the game", conn->username);
 					free(conn->username);
 					free(conn);
 				}

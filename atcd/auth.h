@@ -20,7 +20,7 @@ int auth_remove(const char *name);
 int auth_check(uid_t uid);
 
 /* Gets the list of permitted UIDs. Returns ACL size. */
-size_t auth_get_acl(uid_t **acl);
+size_t auth_get_acl(const uid_t **acl);
 
 #endif
 
