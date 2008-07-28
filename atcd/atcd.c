@@ -12,10 +12,10 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <sys/wait.h>
 #include <pwd.h>
 #include <fcntl.h>
 #include "auth.h"
+#include "atcproc.h"
 #include "list.h"
 #include "../shared/sockpath.h"
 
@@ -28,8 +28,6 @@ static const struct option longopts[] = {
 
 static const char shortopts[] = "S:";
 
-static pid_t cpid;
-
 struct connection;
 struct connection {
 	int fd, debug;
@@ -41,28 +39,22 @@ struct connection {
 static struct list_node connections = LIST_EMPTY_NODE(connections);
 static struct list_node pending = LIST_EMPTY_NODE(pending);
 
+static volatile sig_atomic_t has_atc_exited = 0;
 
 
-static void sig_handler(int signum) {
-	int status;
 
-	if (signum == SIGINT) {
-		/* We need to kill the child as well. */
-		kill(cpid, SIGINT);
-		do {
-			waitpid(cpid, &status, 0);
-		} while (WIFSTOPPED(status));
-		_exit(EXIT_SUCCESS);
-	} else if (signum == SIGCHLD) {
-		/* Die when the child dies. */
-		_exit(EXIT_SUCCESS);
-	}
+static void atc_death_cb(void) {
+	has_atc_exited = 1;
 }
 
 
 
 static inline int set_socred(int fd, int enable) {
-	return setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &enable, sizeof(enable));
+	int ret;
+	do {
+		ret = setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &enable, sizeof(enable));
+	} while (ret < 0 && errno == EINTR);
+	return ret;
 }
 
 
@@ -74,7 +66,7 @@ static inline void clputs(const struct connection *conn, const char *string) {
 	const struct list_node *cur, *prev;
 
 	if (conn != CONN_ALL && conn != CONN_DEBUG) {
-		send(conn->fd, string, strlen(string), MSG_EOR);
+		while (send(conn->fd, string, strlen(string), MSG_EOR) < 0 && errno == EINTR);
 	} else {
 		list_for_each(connections, cur, prev)
 			if (conn == CONN_ALL || list_entry(cur, const struct connection, link)->debug)
@@ -95,49 +87,71 @@ static inline void clprintf(const struct connection *conn, const char *format, .
 
 
 static void server_command(const char *command, struct connection *conn) {
+	const uid_t *uids;
+	size_t nuids, i;
+	const struct passwd *pwd;
+	const struct list_node *cur, *prev;
+
 	if (strcmp(command, "help") == 0) {
 		clputs(conn, "[server] supported commands on this server are:");
 		clputs(conn, "[server] help");
 		clputs(conn, "[server] debug");
 		clputs(conn, "[server] nodebug");
-		clputs(conn, "[server] allow");
-		clputs(conn, "[server] deny");
+		clputs(conn, "[server] allow <user>");
+		clputs(conn, "[server] deny <user>");
 		clputs(conn, "[server] acl");
 		clputs(conn, "[server] users");
+		clputs(conn, "[server] start [<map>]");
+		clputs(conn, "[server] stop");
+		clputs(conn, "[server] quit");
 	} else if (strcmp(command, "debug") == 0) {
 		conn->debug = 1;
 		clputs(conn, "[server] debug mode enabled");
 	} else if (strcmp(command, "nodebug") == 0) {
 		conn->debug = 0;
 		clputs(conn, "[server] debug mode disabled");
-	} else if (memcmp(command, "allow ", strlen("allow ")) == 0) {
-		if (auth_add(command + strlen("allow ")) < 0) {
+	} else if (memcmp(command, "allow ", 6) == 0) {
+		if (auth_add(command + 6) < 0) {
 			clputs(conn, "[server] error");
 		} else {
 			clputs(conn, "[server] OK");
 		}
-	} else if (memcmp(command, "deny ", strlen("deny ")) == 0) {
-		if (auth_remove(command + strlen("deny ")) < 0) {
+	} else if (memcmp(command, "deny ", 5) == 0) {
+		if (auth_remove(command + 5) < 0) {
 			clputs(conn, "[server] error");
 		} else {
 			clputs(conn, "[server] OK");
 		}
 	} else if (strcmp(command, "acl") == 0) {
-		const uid_t *uids;
-		size_t nuids, i;
-		const struct passwd *pwd;
 		nuids = auth_get_acl(&uids);
 		for (i = 0; i < nuids; i++) {
-			pwd = getpwuid(uids[i]);
+			do {
+				pwd = getpwuid(uids[i]);
+			} while (!pwd && errno == EINTR);
 			if (pwd)
 				clprintf(conn, "[server] %s", pwd->pw_name);
 			else
 				clprintf(conn, "[server] %u", uids[i]);
 		}
 	} else if (strcmp(command, "users") == 0) {
-		const struct list_node *cur, *prev;
 		list_for_each(connections, cur, prev)
 			clprintf(conn, "[server] %s", list_entry(cur, const struct connection, link)->username);
+	} else if (memcmp(command, "start", 5) == 0 && (command[5] == '\0' || command[5] == ' ')) {
+		if (atcproc_is_running()) {
+			clputs(conn, "[server] game is already running");
+		} else {
+			if (atcproc_start(command[5] == '\0' ? 0 : command + 6) == 0)
+				clprintf(CONN_ALL, "[server] %s has started the game", conn->username);
+		}
+	} else if (strcmp(command, "stop") == 0) {
+		if (atcproc_stop() == 0)
+			clprintf(CONN_ALL, "[server] %s ended the game", conn->username);
+	} else if (strcmp(command, "quit") == 0) {
+		list_for_each(connections, cur, prev)
+			close(list_entry(cur, const struct connection, link)->fd);
+		atcproc_stop();
+		printf("%s shut down the server\n", conn->username);
+		exit(EXIT_SUCCESS);
 	} else {
 		clputs(conn, "[server] unknown command");
 	}
@@ -164,7 +178,9 @@ static int run_pending_connection_once(const char *appname, struct connection *c
 	msg.msg_control = auxbuf;
 	msg.msg_controllen = sizeof(auxbuf);
 	msg.msg_flags = 0;
-	ret = recvmsg(conn->fd, &msg, 0);
+	do {
+		ret = recvmsg(conn->fd, &msg, 0);
+	} while (ret < 0 && errno == EINTR);
 	if (ret <= 0)
 		return -1;
 	databuf[ret] = '\0';
@@ -184,7 +200,9 @@ static int run_pending_connection_once(const char *appname, struct connection *c
 	}
 
 	/* Look up the username. */
-	pwd = getpwuid(cred->uid);
+	do {
+		pwd = getpwuid(cred->uid);
+	} while (!pwd && errno == EINTR);
 	if (!pwd) {
 		clprintf(CONN_DEBUG, "[server] user denied for no passwd entry: %d", cred->uid);
 		clputs(conn, "MATC ACCESS");
@@ -224,14 +242,14 @@ static int run_pending_connection_once(const char *appname, struct connection *c
 
 
 
-static int run_connection_once(struct connection *conn, int pipefd) {
+static int run_connection_once(struct connection *conn) {
 	char databuf[256];
 	ssize_t ret;
-	char *ptr;
-	size_t left;
 
 	/* Receive a message. */
-	ret = recv(conn->fd, databuf, sizeof(databuf) - 1, 0);
+	do {
+		ret = recv(conn->fd, databuf, sizeof(databuf) - 1, 0);
+	} while (ret < 0 && errno == EINTR);
 	if (ret <= 0)
 		return -1;
 	databuf[ret] = '\0';
@@ -246,30 +264,24 @@ static int run_connection_once(struct connection *conn, int pipefd) {
 		return 0;
 	}
 
-	/* Dump the received data into the pipe. */
-	ptr = databuf;
-	left = ret;
-	while (left) {
-		ret = write(pipefd, ptr, left);
-		if (ret < 0)
-			return -1;
-		ptr += ret;
-		left -= ret;
-	}
+	/* Dump the received data to the atc process. */
+	if (atcproc_is_running())
+		atcproc_send(databuf);
 
 	return 0;
 }
 
 
 
-static int run_parent(const char *appname, int listenfd, int pipefd) {
+static int run_parent(const char *appname, int listenfd) {
 	int maxfd, newfd;
 	fd_set rfds;
 	struct list_node *prev, *cur;
 	struct connection *conn;
+	sigset_t mask, oldmask;
 
 	for (;;) {
-		/* Select on everything. */
+		/* Load up all the socket FDs to select() on. */
 		FD_ZERO(&rfds);
 		FD_SET(listenfd, &rfds);
 		maxfd = listenfd;
@@ -285,18 +297,31 @@ static int run_parent(const char *appname, int listenfd, int pipefd) {
 			if (conn->fd > maxfd)
 				maxfd = conn->fd;
 		}
-		if (select(maxfd + 1, &rfds, 0, 0, 0) < 0) {
-			perror(appname);
-			return EXIT_FAILURE;
+
+		/* Careful! Manage the race between select()ing and getting SIGCHLD. */
+		sigfillset(&mask);
+		sigprocmask(SIG_BLOCK, &mask, &oldmask);
+		for (;;) {
+			if (has_atc_exited) {
+				clputs(CONN_ALL, "[server] the game has ended");
+				has_atc_exited = 0;
+			}
+			if (pselect(maxfd + 1, &rfds, 0, 0, 0, &oldmask) >= 0)
+				break;
+			if (errno != EINTR) {
+				perror(appname);
+				return EXIT_FAILURE;
+			}
 		}
+		sigprocmask(SIG_SETMASK, &oldmask, 0);
 
 		/* First check for any progress in the connected FDs. */
 		list_for_each(connections, cur, prev) {
 			conn = list_entry(cur, struct connection, link);
 			if (FD_ISSET(conn->fd, &rfds)) {
-				if (run_connection_once(conn, pipefd) < 0) {
+				if (run_connection_once(conn) < 0) {
 					list_del(cur, prev);
-					close(conn->fd);
+					while (close(conn->fd) < 0 && errno == EINTR);
 					clprintf(CONN_ALL, "[server] %s has exited the game", conn->username);
 					free(conn->username);
 					free(conn);
@@ -310,7 +335,7 @@ static int run_parent(const char *appname, int listenfd, int pipefd) {
 			if (FD_ISSET(conn->fd, &rfds)) {
 				list_del(cur, prev);
 				if (run_pending_connection_once(appname, conn) < 0) {
-					close(conn->fd);
+					while (close(conn->fd) < 0 && errno == EINTR);
 					free(conn);
 				} else {
 					list_add(cur, &connections);
@@ -320,7 +345,9 @@ static int run_parent(const char *appname, int listenfd, int pipefd) {
 
 		/* Finally check if we have an incoming connection on the listener. */
 		if (FD_ISSET(listenfd, &rfds)) {
-			newfd = accept(listenfd, 0, 0);
+			do {
+				newfd = accept(listenfd, 0, 0);
+			} while (newfd < 0 && errno == EINTR);
 			if (newfd >= 0) {
 				/* Enable credential-passing. */
 				if (set_socred(newfd, 1) < 0) {
@@ -349,11 +376,8 @@ static int run_parent(const char *appname, int listenfd, int pipefd) {
 int main(int argc, char **argv) {
 	int ret;
 	mode_t oldumask;
-	char **argarray;
-	int pipefds[2];
-	int piperead, pipewrite, sockfd;
+	int sockfd;
 	struct sockaddr_un saddr;
-	struct sigaction sigact;
 
 	/* Initialize the authentication library. */
 	if (auth_init() < 0) {
@@ -385,38 +409,6 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	/* Create a pipe to run between the parent atcd process and the child atc process. */
-	if (pipe(pipefds) < 0) {
-		perror(argv[0]);
-		return EXIT_FAILURE;
-	}
-	piperead = pipefds[0];
-	pipewrite = pipefds[1];
-
-	/* Build an array to hold the remaining command-line parameters to send to atc. */
-	argarray = malloc(sizeof(*argarray) * (argc - optind + 2));
-	if (!argarray) {
-		perror(argv[0]);
-		return EXIT_FAILURE;
-	}
-	argarray[0] = "atc";
-	memcpy(argarray + 1, argv + optind, (argc - optind) * sizeof(char *));
-	argarray[argc - optind + 1] = 0;
-
-	/* Set up the handler for SIGINT and SIGCHLD. */
-	sigact.sa_handler = &sig_handler;
-	sigemptyset(&sigact.sa_mask);
-	sigact.sa_flags = 0;
-	if (sigaction(SIGINT, &sigact, 0) < 0) {
-		perror(argv[0]);
-		return EXIT_FAILURE;
-	}
-	sigact.sa_flags = SA_NOCLDSTOP;
-	if (sigaction(SIGCHLD, &sigact, 0) < 0) {
-		perror(argv[0]);
-		return EXIT_FAILURE;
-	}
-
 	/* Create and initialize the socket. */
 	sockfd = socket(PF_UNIX, SOCK_SEQPACKET, 0);
 	if (sockfd < 0) {
@@ -436,36 +428,10 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
-	/* Fork! */
-	cpid = fork();
-	if (cpid < 0) {
-		perror(argv[0]);
-		return EXIT_FAILURE;
-	} else if (cpid == 0) {
-		/* Child. */
-		/* Close the socket. */
-		close(sockfd);
-		/* Close the write side of the pipe. */
-		close(pipewrite);
-		/* Copy the read side of the pipe to become stdin. */
-		if (dup2(piperead, 0) < 0) {
-			perror(argv[0]);
-			return EXIT_FAILURE;
-		}
-		/* Close the old read handle. */
-		close(piperead);
-		/* Run atc! */
-		execvp("atc", argarray);
-		perror(argv[0]);
-		return EXIT_FAILURE;
-	} else {
-		/* Parent. */
-		/* Close the read side of the pipe. */
-		close(piperead);
-		/* Run magic! */
-		return run_parent(argv[0], sockfd, pipewrite);
-	}
+	/* Set the callback for child death. */
+	atcproc_set_cb(&atc_death_cb);
 
-	return 0;
+	/* Run. */
+	return run_parent(argv[0], sockfd);
 }
 

@@ -57,7 +57,9 @@ static int to_uid(const char *name, uid_t *uid) {
 		return 0;
 
 	/* Try translating it through /etc/passwd. */
-	pwd = getpwnam(name);
+	do {
+		pwd = getpwnam(name);
+	} while (!pwd && errno == EINTR);
 	if (pwd) {
 		*uid = pwd->pw_uid;
 		return 0;
