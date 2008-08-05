@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include "commands.h"
 #include "../shared/sockpath.h"
+#include "../shared/sockaddr_union.h"
 
 
 
@@ -219,7 +220,7 @@ static void usage(const char *appname) {
 
 int main(int argc, char **argv) {
 	int sockfd;
-	struct sockaddr_un saddr;
+	union sockaddr_union saddr;
 
 	/* Check command line arguments. */
 	if (argc != 1 && argc != 2) {
@@ -229,14 +230,14 @@ int main(int argc, char **argv) {
 
 	/* Establish the socket path to connect to. */
 	if (argc == 2) {
-		if (strlen(argv[1]) + 1 > sizeof(saddr.sun_path)) {
+		if (strlen(argv[1]) + 1 > sizeof(saddr.sun.sun_path)) {
 			errno = ENAMETOOLONG;
 			perror(argv[0]);
 			return EXIT_FAILURE;
 		}
-		strcpy(saddr.sun_path, argv[1]);
+		strcpy(saddr.sun.sun_path, argv[1]);
 	} else {
-		if (sockpath_set_default(&saddr) < 0) {
+		if (sockpath_set_default(&saddr.sun) < 0) {
 			perror(argv[0]);
 			return EXIT_FAILURE;
 		}
@@ -248,8 +249,8 @@ int main(int argc, char **argv) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}
-	saddr.sun_family = AF_UNIX;
-	if (connect(sockfd, (const struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
+	saddr.sun.sun_family = AF_UNIX;
+	if (connect(sockfd, &saddr.s, sizeof(saddr)) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}

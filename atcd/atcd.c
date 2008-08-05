@@ -18,6 +18,7 @@
 #include "atcproc.h"
 #include "list.h"
 #include "../shared/sockpath.h"
+#include "../shared/sockaddr_union.h"
 
 
 
@@ -377,7 +378,7 @@ int main(int argc, char **argv) {
 	int ret;
 	mode_t oldumask;
 	int sockfd;
-	struct sockaddr_un saddr;
+	union sockaddr_union saddr;
 
 	/* Initialize the authentication library. */
 	if (auth_init() < 0) {
@@ -386,7 +387,7 @@ int main(int argc, char **argv) {
 	}
 
 	/* Make the default socket path. */
-	if (sockpath_set_default(&saddr) < 0) {
+	if (sockpath_set_default(&saddr.sun) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}
@@ -395,12 +396,12 @@ int main(int argc, char **argv) {
 	while ((ret = getopt_long(argc, argv, shortopts, longopts, 0)) >= 0) {
 		switch (ret) {
 			case 'S':
-				if (strlen(optarg) + 1 > sizeof(saddr.sun_path)) {
+				if (strlen(optarg) + 1 > sizeof(saddr.sun.sun_path)) {
 					errno = ENAMETOOLONG;
 					perror(argv[0]);
 					return EXIT_FAILURE;
 				}
-				strcpy(saddr.sun_path, optarg);
+				strcpy(saddr.sun.sun_path, optarg);
 				break;
 
 			default:
@@ -415,10 +416,10 @@ int main(int argc, char **argv) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}
-	unlink(saddr.sun_path);
-	saddr.sun_family = AF_UNIX;
+	unlink(saddr.sun.sun_path);
+	saddr.sun.sun_family = AF_UNIX;
 	oldumask = umask(0);
-	if (bind(sockfd, (const struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
+	if (bind(sockfd, &saddr.s, sizeof(saddr)) < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}

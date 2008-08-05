@@ -1,4 +1,4 @@
-CFLAGS=-Wall -O2
+CFLAGS=-Wall -O2 -Wstrict-aliasing=2 -fstrict-aliasing
 
 world: atcd/atcd atcc/atcc
 
