@@ -16,7 +16,6 @@
 #include <fcntl.h>
 #include "auth.h"
 #include "atcproc.h"
-#include "list.h"
 #include "../shared/sockpath.h"
 #include "../shared/sockaddr_union.h"
 
@@ -31,14 +30,15 @@ static const char shortopts[] = "S:";
 
 struct connection;
 struct connection {
+	struct connection *next;
+	struct connection **prevptr;
 	int fd, debug;
 	uid_t user;
 	char *username;
-	struct list_node link;
 };
 
-static struct list_node connections = LIST_EMPTY_NODE(connections);
-static struct list_node pending = LIST_EMPTY_NODE(pending);
+static struct connection *connections = 0;
+static struct connection *pending = 0;
 
 static volatile sig_atomic_t has_atc_exited = 0;
 
@@ -64,14 +64,14 @@ static const struct connection CONN_ALL_IMPL, CONN_DEBUG_IMPL;
 static const struct connection * const CONN_ALL = &CONN_ALL_IMPL;
 static const struct connection * const CONN_DEBUG = &CONN_DEBUG_IMPL;
 static inline void clputs(const struct connection *conn, const char *string) {
-	const struct list_node *cur, *prev;
+	const struct connection *cur_conn;
 
 	if (conn != CONN_ALL && conn != CONN_DEBUG) {
 		while (send(conn->fd, string, strlen(string), MSG_EOR) < 0 && errno == EINTR);
 	} else {
-		list_for_each(connections, cur, prev)
-			if (conn == CONN_ALL || list_entry(cur, const struct connection, link)->debug)
-				clputs(list_entry(cur, const struct connection, link), string);
+		for (cur_conn = connections; cur_conn; cur_conn = cur_conn->next)
+			if (conn == CONN_ALL || cur_conn->debug)
+				clputs(cur_conn, string);
 	}
 }
 
@@ -91,7 +91,7 @@ static void server_command(const char *command, struct connection *conn) {
 	const uid_t *uids;
 	size_t nuids, i;
 	const struct passwd *pwd;
-	const struct list_node *cur, *prev;
+	const struct connection *cur_conn;
 
 	if (strcmp(command, "help") == 0) {
 		clputs(conn, "[server] supported commands on this server are:");
@@ -135,8 +135,8 @@ static void server_command(const char *command, struct connection *conn) {
 				clprintf(conn, "[server] %u", uids[i]);
 		}
 	} else if (strcmp(command, "users") == 0) {
-		list_for_each(connections, cur, prev)
-			clprintf(conn, "[server] %s", list_entry(cur, const struct connection, link)->username);
+		for (cur_conn = connections; cur_conn; cur_conn = cur_conn->next)
+			clprintf(conn, "[server] %s", cur_conn->username);
 	} else if (memcmp(command, "start", 5) == 0 && (command[5] == '\0' || command[5] == ' ')) {
 		if (atcproc_is_running()) {
 			clputs(conn, "[server] game is already running");
@@ -148,8 +148,8 @@ static void server_command(const char *command, struct connection *conn) {
 		if (atcproc_stop() == 0)
 			clprintf(CONN_ALL, "[server] %s ended the game", conn->username);
 	} else if (strcmp(command, "quit") == 0) {
-		list_for_each(connections, cur, prev)
-			close(list_entry(cur, const struct connection, link)->fd);
+		for (cur_conn = connections; cur_conn; cur_conn = cur_conn->next)
+			close(cur_conn->fd);
 		atcproc_stop();
 		printf("%s shut down the server\n", conn->username);
 		exit(EXIT_SUCCESS);
@@ -277,8 +277,7 @@ static int run_connection_once(struct connection *conn) {
 static int run_parent(const char *appname, int listenfd) {
 	int maxfd, newfd;
 	fd_set rfds;
-	struct list_node *prev, *cur;
-	struct connection *conn;
+	struct connection *conn, *nextconn;
 	sigset_t mask, oldmask;
 
 	for (;;) {
@@ -286,14 +285,12 @@ static int run_parent(const char *appname, int listenfd) {
 		FD_ZERO(&rfds);
 		FD_SET(listenfd, &rfds);
 		maxfd = listenfd;
-		list_for_each(connections, cur, prev) {
-			conn = list_entry(cur, struct connection, link);
+		for (conn = connections; conn; conn = conn->next) {
 			FD_SET(conn->fd, &rfds);
 			if (conn->fd > maxfd)
 				maxfd = conn->fd;
 		}
-		list_for_each(pending, cur, prev) {
-			conn = list_entry(cur, struct connection, link);
+		for (conn = pending; conn; conn = conn->next) {
 			FD_SET(conn->fd, &rfds);
 			if (conn->fd > maxfd)
 				maxfd = conn->fd;
@@ -317,32 +314,43 @@ static int run_parent(const char *appname, int listenfd) {
 		sigprocmask(SIG_SETMASK, &oldmask, 0);
 
 		/* First check for any progress in the connected FDs. */
-		list_for_each(connections, cur, prev) {
-			conn = list_entry(cur, struct connection, link);
-			if (FD_ISSET(conn->fd, &rfds)) {
+		for (conn = connections, nextconn = conn ? conn->next : 0; conn; conn = nextconn, nextconn = conn ? conn->next : 0)
+			if (FD_ISSET(conn->fd, &rfds))
 				if (run_connection_once(conn) < 0) {
-					list_del(cur, prev);
+					/* Delete from linked list.*/
+					if (conn->next)
+						conn->next->prevptr = conn->prevptr;
+					*(conn->prevptr) = conn->next;
+
+					/* Shut down connection. */
 					while (close(conn->fd) < 0 && errno == EINTR);
 					clprintf(CONN_ALL, "[server] %s has exited the game", conn->username);
 					free(conn->username);
 					free(conn);
 				}
-			}
-		}
 
 		/* Next check for any progress in the pending FDs. */
-		list_for_each(pending, cur, prev) {
-			conn = list_entry(cur, struct connection, link);
+		for (conn = pending, nextconn = conn ? conn->next : 0; conn; conn = nextconn, nextconn = conn ? conn->next : 0)
 			if (FD_ISSET(conn->fd, &rfds)) {
-				list_del(cur, prev);
+				/* Delete from linked list. */
+				if (conn->next)
+					conn->next->prevptr = conn->prevptr;
+				*(conn->prevptr) = conn->next;
+
+				/* Handle the arrived packet. */
 				if (run_pending_connection_once(appname, conn) < 0) {
+					/* Shut down the connection. */
 					while (close(conn->fd) < 0 && errno == EINTR);
 					free(conn);
 				} else {
-					list_add(cur, &connections);
+					/* Add to the connected list. */
+					conn->next = connections;
+					conn->prevptr = &connections;
+					connections = conn;
+					if (conn->next)
+						conn->next->prevptr = &conn->next;
 				}
 			}
-		}
 
 		/* Finally check if we have an incoming connection on the listener. */
 		if (FD_ISSET(listenfd, &rfds)) {
@@ -359,12 +367,18 @@ static int run_parent(const char *appname, int listenfd) {
 					if (!conn) {
 						close(newfd);
 					} else {
-						/* Initialize the new connection and link it into the pending list. */
+						/* Initialize the new connection. */
 						conn->fd = newfd;
 						conn->debug = 0;
 						conn->user = 0;
 						conn->username = 0;
-						list_add(&conn->link, &pending);
+
+						/* Add it to the pending list. */
+						conn->next = pending;
+						conn->prevptr = &pending;
+						pending = conn;
+						if (conn->next)
+							conn->next->prevptr = &conn->next;
 					}
 				}
 			}
