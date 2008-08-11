@@ -113,7 +113,7 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		if (parse_command(current_input, output, sizeof(output), &terminal) == 0 && terminal) {
 			/* Don't send the newline for chat messages. */
 			if (current_input[0] != '/')
-				strcat(current_input, "\r\n");
+				strcat(current_input, "\n");
 			if (send(sockfd, current_input, strlen(current_input), MSG_EOR) < 0) {
 				safe_endwin();
 				perror(appname);
