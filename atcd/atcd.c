@@ -104,6 +104,8 @@ static void server_command(const char *command, struct connection *conn) {
 		clputs(conn, "[server] users");
 		clputs(conn, "[server] start [<map>]");
 		clputs(conn, "[server] stop");
+		clputs(conn, "[server] pause");
+		clputs(conn, "[server] resume");
 		clputs(conn, "[server] quit");
 	} else if (strcmp(command, "debug") == 0) {
 		conn->debug = 1;
@@ -147,6 +149,12 @@ static void server_command(const char *command, struct connection *conn) {
 	} else if (strcmp(command, "stop") == 0) {
 		if (atcproc_stop() == 0)
 			clprintf(CONN_ALL, "[server] %s ended the game", conn->username);
+	} else if (strcmp(command, "pause") == 0) {
+		if (atcproc_pause() == 0)
+			clprintf(CONN_ALL, "[server] %s paused the game", conn->username);
+	} else if (strcmp(command, "resume") == 0) {
+		if (atcproc_resume() == 0)
+			clprintf(CONN_ALL, "[server] %s resumed the game", conn->username);
 	} else if (strcmp(command, "quit") == 0) {
 		for (cur_conn = connections; cur_conn; cur_conn = cur_conn->next)
 			close(cur_conn->fd);

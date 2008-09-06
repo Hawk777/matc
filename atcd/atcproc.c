@@ -174,6 +174,9 @@ int atcproc_stop(void) {
 		goto out;
 	}
 
+	/* Send it SIGCONT in case it was paused. */
+	kill(child_pid, SIGCONT);
+
 	/* Send it SIGINT. */
 	if (kill(child_pid, SIGINT) < 0)
 		goto out;
@@ -192,6 +195,60 @@ int atcproc_stop(void) {
 	child_pid = -1;
 	close(pipe_write);
 	pipe_write = -1;
+	ret = 0;
+
+out:
+	restore_sigs(&saved_mask);
+	return ret;
+}
+
+
+
+int atcproc_pause(void) {
+	sigset_t saved_mask;
+	int ret = -1;
+
+	/* Block signals to avoid race conditions. */
+	block_sigs(&saved_mask);
+
+	/* Check that the child PID is valid. */
+	if (child_pid < 0) {
+		errno = ESRCH;
+		goto out;
+	}
+
+	/* Send it SIGSTOP. */
+	if (kill(child_pid, SIGSTOP) < 0)
+		goto out;
+
+	/* Success! */
+	ret = 0;
+
+out:
+	restore_sigs(&saved_mask);
+	return ret;
+}
+
+
+
+int atcproc_resume(void) {
+	sigset_t saved_mask;
+	int ret = -1;
+
+	/* Block signals to avoid race conditions. */
+	block_sigs(&saved_mask);
+
+	/* Check that the child PID is valid. */
+	if (child_pid < 0) {
+		errno = ESRCH;
+		goto out;
+	}
+
+	/* Send it SIGCONT. */
+	if (kill(child_pid, SIGCONT) < 0)
+		goto out;
+
+	/* Success! */
 	ret = 0;
 
 out:

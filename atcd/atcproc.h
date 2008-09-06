@@ -7,6 +7,12 @@ int atcproc_start(const char *game);
 /* Stops any running process. Returns 0 on success, -1 on failure. */
 int atcproc_stop(void);
 
+/* Pauses a running ATC process. Returns 0 on success, -1 on failure. */
+int atcproc_pause(void);
+
+/* Resumes a paused ATC process. Returns 0 on success, -1 on failure. */
+int atcproc_resume(void);
+
 /* Checks whether a child process is already running. Returns 1 if so, 0 if not. */
 int atcproc_is_running(void);
 
