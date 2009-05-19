@@ -1,4 +1,4 @@
-CFLAGS=-Wall -O2 -Wstrict-aliasing=2 -fstrict-aliasing
+CFLAGS=-Wall -Wextra -march=native -O2 -Wstrict-aliasing=2 -fstrict-aliasing -fomit-frame-pointer -D_GNU_SOURCE
 
 world: atcd/atcd atcc/atcc
 

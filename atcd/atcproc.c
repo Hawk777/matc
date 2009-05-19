@@ -24,7 +24,7 @@ static void (*volatile child_death_callback)(void);
 
 
 /* A signal handler to handle SIGINT/SIGTERM sent to the parent. */
-static void term_sig_handler(int signum) {
+static void term_sig_handler(int signum __attribute__((unused))) {
 	/* Kill the child. */
 	atcproc_stop();
 
@@ -33,7 +33,7 @@ static void term_sig_handler(int signum) {
 }
 
 /* A signal handler to handle SIGCHLD sent to the parent. */
-static void child_sig_handler(int signum) {
+static void child_sig_handler(int signum __attribute__((unused))) {
 	pid_t pid;
 	int status;
 
@@ -80,7 +80,7 @@ int atcproc_start(const char *game) {
 	int pipefds[2];
 	pid_t pid;
 	struct rlimit rlim;
-	int i;
+	unsigned int i;
 	struct sigaction sa;
 	sigset_t saved_mask;
 	int ret = -1;
@@ -164,6 +164,7 @@ int atcproc_stop(void) {
 	sigset_t saved_mask;
 	int ret = -1, status;
 	pid_t died_pid;
+	ssize_t ssz;
 
 	/* Block signals to avoid race conditions. */
 	block_sigs(&saved_mask);
@@ -184,7 +185,7 @@ int atcproc_stop(void) {
 	/* We can't reliably wait for the process to "receive" SIGINT, so just keep trying repeatedly. */
 	while ((died_pid = waitpid(child_pid, &status, WNOHANG)) == 0) {
 		/* Nothing died yet. Pipe in a Y to answer the "quit now?" question. */
-		write(pipe_write, "y", 1);
+		ssz = write(pipe_write, "y", 1);
 		/* Go to sleep for a bit. */
 		usleep(100000);
 	}

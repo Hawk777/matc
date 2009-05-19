@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
@@ -168,7 +167,7 @@ static void server_command(const char *command, struct connection *conn) {
 
 
 
-static int run_pending_connection_once(const char *appname, struct connection *conn) {
+static int run_pending_connection_once(struct connection *conn) {
 	char databuf[256], auxbuf[256];
 	struct iovec iov;
 	struct msghdr msg;
@@ -346,7 +345,7 @@ static int run_parent(const char *appname, int listenfd) {
 				*(conn->prevptr) = conn->next;
 
 				/* Handle the arrived packet. */
-				if (run_pending_connection_once(appname, conn) < 0) {
+				if (run_pending_connection_once(conn) < 0) {
 					/* Shut down the connection. */
 					while (close(conn->fd) < 0 && errno == EINTR);
 					free(conn);
