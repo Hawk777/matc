@@ -198,7 +198,8 @@ static bool run_pending_connection_once(struct connection *conn) {
 		clputs(conn, "MATC ACCESS");
 		return false;
 	}
-	const struct ucred *cred = (const struct ucred *) CMSG_DATA(cmsg);
+	struct ucred cred;
+	memcpy(&cred, CMSG_DATA(cmsg), sizeof(cred));
 
 	/* Disable credential passing from now on. */
 	if (set_socred(conn->fd, 0) < 0) {
@@ -208,16 +209,16 @@ static bool run_pending_connection_once(struct connection *conn) {
 	/* Look up the username. */
 	struct passwd *pwd;
 	do {
-		pwd = getpwuid(cred->uid);
+		pwd = getpwuid(cred.uid);
 	} while (!pwd && errno == EINTR);
 	if (!pwd) {
-		clprintf(CONN_DEBUG, "[server] user denied for no passwd entry: %d", cred->uid);
+		clprintf(CONN_DEBUG, "[server] user denied for no passwd entry: %d", cred.uid);
 		clputs(conn, "MATC ACCESS");
 		return false;
 	}
 
 	/* Check for an acceptable UID. */
-	if (!auth_check(cred->uid)) {
+	if (!auth_check(cred.uid)) {
 		clprintf(CONN_DEBUG, "[server] user denied by ACL: %s", pwd->pw_name);
 		clputs(conn, "MATC ACCESS");
 		return false;
@@ -231,7 +232,7 @@ static bool run_pending_connection_once(struct connection *conn) {
 	}
 
 	/* Store a copy of the UID and username. */
-	conn->user = cred->uid;
+	conn->user = cred.uid;
 	conn->username = strdup(pwd->pw_name);
 	if (!conn->username) {
 		clprintf(CONN_DEBUG, "[server] strdup failed saving username: %s", pwd->pw_name);

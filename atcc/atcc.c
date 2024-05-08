@@ -1,5 +1,6 @@
 #include <curses.h>
 #include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -43,12 +44,16 @@ static bool authenticate(int sockfd) {
 		.msg_flags = 0,
 	};
 
-	CMSG_FIRSTHDR(&msg)->cmsg_level = SOL_SOCKET;
-	CMSG_FIRSTHDR(&msg)->cmsg_type = SCM_CREDENTIALS;
-	CMSG_FIRSTHDR(&msg)->cmsg_len = CMSG_LEN(sizeof(struct ucred));
-	((struct ucred *) CMSG_DATA(CMSG_FIRSTHDR(&msg)))->pid = getpid();
-	((struct ucred *) CMSG_DATA(CMSG_FIRSTHDR(&msg)))->uid = getuid();
-	((struct ucred *) CMSG_DATA(CMSG_FIRSTHDR(&msg)))->gid = getgid();
+	struct ucred cred = {
+		.pid = getpid(),
+		.uid = getuid(),
+		.gid = getgid(),
+	};
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_level = SOL_SOCKET;
+	cmsg->cmsg_type = SCM_CREDENTIALS;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(struct ucred));
+	memcpy(CMSG_DATA(cmsg), &cred, sizeof(cred));
 
 	if (sendmsg(sockfd, &msg, MSG_NOSIGNAL | MSG_EOR) < 0)
 		return false;
