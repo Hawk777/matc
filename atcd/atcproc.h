@@ -1,6 +1,8 @@
 #if !defined ATCPROC_H
 #define ATCPROC_H
 
+#include <stdbool.h>
+
 /* Launches an ATC process. Returns true on success, false on failure. */
 bool atcproc_start(const char *game);
 
