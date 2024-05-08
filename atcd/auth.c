@@ -83,11 +83,9 @@ bool auth_init(void) {
 
 void auth_cleanup(void) {
 	/* Deallocate the array. */
-	if (allowed) {
-		free(allowed);
-		allowed = nullptr;
-		allowed_count = allowed_alloc = 0;
-	}
+	free(allowed);
+	allowed = nullptr;
+	allowed_count = allowed_alloc = 0;
 }
 
 
