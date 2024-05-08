@@ -1,23 +1,23 @@
 #if !defined ATCPROC_H
 #define ATCPROC_H
 
-/* Launches an ATC process. Returns 0 on success, -1 on failure. */
-int atcproc_start(const char *game);
+/* Launches an ATC process. Returns true on success, false on failure. */
+bool atcproc_start(const char *game);
 
-/* Stops any running process. Returns 0 on success, -1 on failure. */
-int atcproc_stop(void);
+/* Stops any running process. Returns true on success, false on failure. */
+bool atcproc_stop(void);
 
-/* Pauses a running ATC process. Returns 0 on success, -1 on failure. */
-int atcproc_pause(void);
+/* Pauses a running ATC process. Returns true on success, false on failure. */
+bool atcproc_pause(void);
 
-/* Resumes a paused ATC process. Returns 0 on success, -1 on failure. */
-int atcproc_resume(void);
+/* Resumes a paused ATC process. Returns true on success, false on failure. */
+bool atcproc_resume(void);
 
-/* Checks whether a child process is already running. Returns 1 if so, 0 if not. */
-int atcproc_is_running(void);
+/* Checks whether a child process is already running. Returns true if so, false if not. */
+bool atcproc_is_running(void);
 
-/* Sends data to a running process. Returns 0 on success, -1 on failure. */
-int atcproc_send(const char *string);
+/* Sends data to a running process. Returns true on success, false on failure. */
+bool atcproc_send(const char *string);
 
 /* Specifies what function should be invoked when the ATC process dies. */
 void atcproc_set_cb(void (*cb)(void));

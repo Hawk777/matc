@@ -19,7 +19,7 @@ static volatile pid_t child_pid = -1;
 static volatile int pipe_write = -1;
 
 /* The callback function. */
-static void (*volatile child_death_callback)(void);
+static void (*volatile child_death_callback)(void) = nullptr;
 
 
 
@@ -34,11 +34,8 @@ static void term_sig_handler(int signum __attribute__((unused))) {
 
 /* A signal handler to handle SIGCHLD sent to the parent. */
 static void child_sig_handler(int signum __attribute__((unused))) {
-	pid_t pid;
-	int status;
-
 	/* Fetch and clear child PID. */
-	pid = child_pid;
+	pid_t pid = child_pid;
 	child_pid = -1;
 
 	/* Close and clear pipe write FD. */
@@ -47,6 +44,7 @@ static void child_sig_handler(int signum __attribute__((unused))) {
 	pipe_write = -1;
 
 	/* Reap the child. */
+	int status;
 	if (waitpid(pid, &status, 0) < 0)
 		return;
 
@@ -70,42 +68,38 @@ static void block_sigs(sigset_t *old_mask) {
 /* Restores the previous signal mask saved by block_sigs(). */
 static void restore_sigs(const sigset_t *old_mask) {
 	int temp_errno = errno;
-	sigprocmask(SIG_SETMASK, old_mask, 0);
+	sigprocmask(SIG_SETMASK, old_mask, nullptr);
 	errno = temp_errno;
 }
 
 
 
-int atcproc_start(const char *game) {
-	int pipefds[2];
-	pid_t pid;
-	struct rlimit rlim;
-	unsigned int i;
-	struct sigaction sa;
-	sigset_t saved_mask;
-	int ret = -1;
+bool atcproc_start(const char *game) {
+	bool ret = false;
 
 	/* Block all signals to avoid race conditions. */
+	sigset_t saved_mask;
 	block_sigs(&saved_mask);
 
 	/* Handle SIGINT/SIGTERM. */
+	struct sigaction sa;
 	sa.sa_handler = &term_sig_handler;
 	sigfillset(&sa.sa_mask);
 	sa.sa_flags = 0;
-	if (sigaction(SIGINT, &sa, 0) < 0)
+	if (sigaction(SIGINT, &sa, nullptr) < 0)
 		goto out;
-	if (sigaction(SIGTERM, &sa, 0) < 0)
+	if (sigaction(SIGTERM, &sa, nullptr) < 0)
 		goto out;
 
 	/* Ignore SIGPIPE. */
 	sa.sa_handler = SIG_IGN;
-	if (sigaction(SIGPIPE, &sa, 0) < 0)
+	if (sigaction(SIGPIPE, &sa, nullptr) < 0)
 		goto out;
 
 	/* Install signal handler for SIGCHLD. */
 	sa.sa_handler = &child_sig_handler;
 	sa.sa_flags = SA_NOCLDSTOP;
-	if (sigaction(SIGCHLD, &sa, 0) < 0)
+	if (sigaction(SIGCHLD, &sa, nullptr) < 0)
 		goto out;
 
 	/* Check if a child process is already running. */
@@ -115,33 +109,35 @@ int atcproc_start(const char *game) {
 	}
 
 	/* Create the pipe. */
+	int pipefds[2];
 	if (pipe(pipefds) < 0)
 		goto out;
 
 	/* Fork. */
-	pid = fork();
+	pid_t pid = fork();
 	if (pid < 0)
 		goto out;
 	else if (pid == 0) {
 		/* Child process. Copy the pipe reader to stdin. */
 		if (dup2(pipefds[0], 0) < 0) {
-			perror(0);
+			perror(nullptr);
 			exit(EXIT_FAILURE);
 		}
 		/* Get the number of possible FDs. */
+		struct rlimit rlim;
 		getrlimit(RLIMIT_NOFILE, &rlim);
 		/* Close everything except stdin/stdout/stderr. */
-		for (i = 3; i < rlim.rlim_cur; i++)
+		for (unsigned int i = 3; i < rlim.rlim_cur; i++)
 			close(i);
 		/* Restore the signal mask (we want to leave signals unblocked in atc). */
 		restore_sigs(&saved_mask);
 		/* Execute ATC. */
 		if (game)
-			execlp("atc", "atc", "-g", game, (const char *) 0);
+			execlp("atc", "atc", "-g", game, (const char *) nullptr);
 		else
-			execlp("atc", "atc", (const char *) 0);
+			execlp("atc", "atc", (const char *) nullptr);
 		/* If we got here, execlp() failed. */
-		perror(0);
+		perror(nullptr);
 		exit(EXIT_FAILURE);
 	} else {
 		/* Parent process. Record child PID and pipe write FD. */
@@ -150,7 +146,7 @@ int atcproc_start(const char *game) {
 		/* Close the pipe read FD. */
 		close(pipefds[0]);
 		/* Done! */
-		ret = 0;
+		ret = true;
 	}
 
 out:
@@ -160,13 +156,11 @@ out:
 
 
 
-int atcproc_stop(void) {
-	sigset_t saved_mask;
-	int ret = -1, status;
-	pid_t died_pid;
-	ssize_t ssz;
+bool atcproc_stop(void) {
+	bool ret = false;
 
 	/* Block signals to avoid race conditions. */
+	sigset_t saved_mask;
 	block_sigs(&saved_mask);
 
 	/* Check that the child PID is valid. */
@@ -183,9 +177,11 @@ int atcproc_stop(void) {
 		goto out;
 
 	/* We can't reliably wait for the process to "receive" SIGINT, so just keep trying repeatedly. */
+	pid_t died_pid;
+	int status;
 	while ((died_pid = waitpid(child_pid, &status, WNOHANG)) == 0) {
 		/* Nothing died yet. Pipe in a Y to answer the "quit now?" question. */
-		ssz = write(pipe_write, "y", 1);
+		ssize_t ssz = write(pipe_write, "y", 1);
 		/* Go to sleep for a bit. */
 		usleep(100000);
 	}
@@ -196,7 +192,7 @@ int atcproc_stop(void) {
 	child_pid = -1;
 	close(pipe_write);
 	pipe_write = -1;
-	ret = 0;
+	ret = true;
 
 out:
 	restore_sigs(&saved_mask);
@@ -205,11 +201,11 @@ out:
 
 
 
-int atcproc_pause(void) {
-	sigset_t saved_mask;
-	int ret = -1;
+bool atcproc_pause(void) {
+	bool ret = false;
 
 	/* Block signals to avoid race conditions. */
+	sigset_t saved_mask;
 	block_sigs(&saved_mask);
 
 	/* Check that the child PID is valid. */
@@ -223,7 +219,7 @@ int atcproc_pause(void) {
 		goto out;
 
 	/* Success! */
-	ret = 0;
+	ret = true;
 
 out:
 	restore_sigs(&saved_mask);
@@ -232,11 +228,11 @@ out:
 
 
 
-int atcproc_resume(void) {
-	sigset_t saved_mask;
-	int ret = -1;
+bool atcproc_resume(void) {
+	bool ret = false;
 
 	/* Block signals to avoid race conditions. */
+	sigset_t saved_mask;
 	block_sigs(&saved_mask);
 
 	/* Check that the child PID is valid. */
@@ -250,7 +246,7 @@ int atcproc_resume(void) {
 		goto out;
 
 	/* Success! */
-	ret = 0;
+	ret = true;
 
 out:
 	restore_sigs(&saved_mask);
@@ -259,21 +255,19 @@ out:
 
 
 
-int atcproc_is_running(void) {
+bool atcproc_is_running(void) {
 	sigset_t saved_mask;
-	int ret;
-
 	block_sigs(&saved_mask);
-	ret = child_pid != -1;
+	bool ret = child_pid != -1;
 	restore_sigs(&saved_mask);
 	return ret;
 }
 
 
 
-int atcproc_send(const char *string) {
+bool atcproc_send(const char *string) {
 	sigset_t saved_mask;
-	int ret = -1;
+	bool ret = false;
 	ssize_t written;
 
 	/* Block signals to avoid race condition. */
@@ -288,7 +282,7 @@ int atcproc_send(const char *string) {
 	}
 
 	/* Done! */
-	ret = 0;
+	ret = true;
 
 out:
 	restore_sigs(&saved_mask);

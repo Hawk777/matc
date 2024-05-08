@@ -1,4 +1,4 @@
-CFLAGS=-Wall -Wextra -march=native -O2 -Wstrict-aliasing=2 -fstrict-aliasing -fomit-frame-pointer -D_GNU_SOURCE $(shell ncurses6-config --cflags)
+CFLAGS=-std=c2x -Wall -Wextra -march=native -O2 -Wstrict-aliasing=2 -fstrict-aliasing -fomit-frame-pointer -D_GNU_SOURCE $(shell ncurses6-config --cflags)
 LDFLAGS=$(shell ncurses6-config --libs-only-L)
 LDLIBS=$(shell ncurses6-config --libs-only-l)
 

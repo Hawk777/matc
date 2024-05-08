@@ -25,23 +25,23 @@ static void safe_endwin(void) {
 
 
 
-static int authenticate(int sockfd) {
-	struct msghdr msg;
-	struct iovec iov;
+static bool authenticate(int sockfd) {
+	struct iovec iov = {
+		.iov_base = "MATC 1",
+		.iov_len = strlen("MATC 1"),
+	};
+
 	char cmsgbuf[CMSG_SPACE(sizeof(struct ucred))];
-	char buffer[1024];
-	ssize_t ret;
 
-	msg.msg_name = 0;
-	msg.msg_namelen = 0;
-	msg.msg_iov = &iov;
-	msg.msg_iovlen = 1;
-	msg.msg_control = cmsgbuf;
-	msg.msg_controllen = sizeof(cmsgbuf);
-	msg.msg_flags = 0;
-
-	iov.iov_base = "MATC 1";
-	iov.iov_len = strlen("MATC 1");
+	struct msghdr msg = {
+		.msg_name = nullptr,
+		.msg_namelen = 0,
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = cmsgbuf,
+		.msg_controllen = sizeof(cmsgbuf),
+		.msg_flags = 0,
+	};
 
 	CMSG_FIRSTHDR(&msg)->cmsg_level = SOL_SOCKET;
 	CMSG_FIRSTHDR(&msg)->cmsg_type = SCM_CREDENTIALS;
@@ -51,66 +51,66 @@ static int authenticate(int sockfd) {
 	((struct ucred *) CMSG_DATA(CMSG_FIRSTHDR(&msg)))->gid = getgid();
 
 	if (sendmsg(sockfd, &msg, MSG_NOSIGNAL | MSG_EOR) < 0)
-		return -1;
+		return false;
 
-	ret = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
+	char buffer[1024];
+	ssize_t ret = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
 	if (ret < 0)
-		return -1;
+		return false;
 	if (ret == 0) {
 		errno = ECONNRESET;
-		return -1;
+		return false;
 	}
 	buffer[ret] = '\0';
 	if (strcmp(buffer, "MATC VERSION") == 0) {
 		errno = EPROTONOSUPPORT;
-		return -1;
+		return false;
 	} else if (strcmp(buffer, "MATC ACCESS") == 0) {
 		errno = EACCES;
-		return -1;
+		return false;
 	} else if (strcmp(buffer, "MATC OK") != 0) {
 		errno = EPROTONOSUPPORT;
-		return -1;
+		return false;
 	}
 
-	return 0;
+	return true;
 }
 
 
 
-static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
-	char new_input[1024], output[2048];
-	int ch, terminal;
-
+static bool run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 	/* Get a character. */
-	ch = wgetch(inputwin);
+	int ch = wgetch(inputwin);
 
 	/* See what it is. */
 	if (ch == 4) {
 		/* Control-D -> terminate */
 		endwin();
 		*exitcode = EXIT_SUCCESS;
-		return -1;
+		return false;
 	} else if (ch == 12) {
 		/* Control-L -> refresh screen -> send immediately */
-		output[0] = 12;
-		if (send(sockfd, output, 1, MSG_EOR) < 0) {
+		char output = 12;
+		if (send(sockfd, &output, 1, MSG_EOR) < 0) {
 			safe_endwin();
 			perror(appname);
 			*exitcode = EXIT_FAILURE;
-			return -1;
+			return false;
 		}
 	} else if (ch == ' ' && current_input[0] != '/') {
 		/* Space -> could be used at the termination of the game -> send immediately */
-		output[0] = ' ';
-		if (send(sockfd, output, 1, MSG_EOR) < 0) {
+		char output = ' ';
+		if (send(sockfd, &output, 1, MSG_EOR) < 0) {
 			safe_endwin();
 			perror(appname);
 			*exitcode = EXIT_FAILURE;
-			return -1;
+			return false;
 		}
 	} else if (ch == '\r' || ch == KEY_ENTER) {
 		/* Enter -> send only if our current input is terminal */
-		if (parse_command(current_input, output, sizeof(output), &terminal) == 0 && terminal) {
+		char output[2048];
+		bool terminal;
+		if (parse_command(current_input, output, sizeof(output), &terminal) && terminal) {
 			/* Don't send the newline for chat messages. */
 			if (current_input[0] != '/')
 				strcat(current_input, "\n");
@@ -118,7 +118,7 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 				safe_endwin();
 				perror(appname);
 				*exitcode = EXIT_FAILURE;
-				return -1;
+				return false;
 			}
 			current_input[0] = '\0';
 			wprintw(inputwin, "\r");
@@ -129,6 +129,8 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		/* Backspace -> if current input nonempty then remove last char */
 		if (current_input[0] != '\0') {
 			current_input[strlen(current_input) - 1] = '\0';
+			char output[2048];
+			bool terminal;
 			parse_command(current_input, output, sizeof(output), &terminal);
 			wprintw(inputwin, "\r%s", output);
 			wclrtoeol(inputwin);
@@ -142,11 +144,14 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		wrefresh(inputwin);
 	} else if (ch != ERR && strlen(current_input) + 2 < sizeof(current_input)) {
 		/* Otherwise see if it's syntactically valid to add to our command buffer. */
+		char new_input[1024];
 		strcpy(new_input, current_input);
+		char output[2048];
 		output[0] = ch;
 		output[1] = '\0';
 		strcat(new_input, output);
-		if (parse_command(new_input, output, sizeof(output), &terminal) == 0) {
+		bool terminal;
+		if (parse_command(new_input, output, sizeof(output), &terminal)) {
 			strcpy(current_input, new_input);
 			waddstr(inputwin, "\r");
 			waddstr(inputwin, output);
@@ -155,26 +160,24 @@ static int run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		}
 	}
 
-	return 0;
+	return true;
 }
 
 
 
-static int run_socket_one(const char *appname, int sockfd, int *exitcode) {
-	char buffer[1024];
-	ssize_t ret;
-
+static bool run_socket_one(const char *appname, int sockfd, int *exitcode) {
 	/* Read the packet from the socket. */
-	ret = read(sockfd, buffer, sizeof(buffer));
+	char buffer[1024];
+	ssize_t ret = read(sockfd, buffer, sizeof(buffer));
 	if (ret < 0) {
 		safe_endwin();
 		perror(appname);
 		*exitcode = EXIT_FAILURE;
-		return -1;
+		return false;
 	} else if (ret == 0) {
 		endwin();
 		*exitcode = EXIT_SUCCESS;
-		return -1;
+		return false;
 	}
 	buffer[ret] = '\0';
 
@@ -182,31 +185,33 @@ static int run_socket_one(const char *appname, int sockfd, int *exitcode) {
 	waddstr(chatwin, buffer);
 	waddstr(chatwin, "\n");
 	wrefresh(chatwin);
-	return 0;
+	return true;
 }
 
 
 
 static int run(const char *appname, int sockfd) {
-	fd_set rfds;
-	int exitcode;
-
 	for (;;) {
+		fd_set rfds;
 		FD_ZERO(&rfds);
 		FD_SET(0 /* stdin */, &rfds);
 		FD_SET(sockfd, &rfds);
-		if (select(sockfd + 1, &rfds, 0, 0, 0) < 0) {
+		if (select(sockfd + 1, &rfds, nullptr, nullptr, nullptr) < 0) {
 			safe_endwin();
 			perror(appname);
 			return EXIT_FAILURE;
 		}
 
-		if (FD_ISSET(0, &rfds))
-			if (run_stdin_one(appname, sockfd, &exitcode) < 0)
+		if (FD_ISSET(0, &rfds)) {
+			int exitcode;
+			if (!run_stdin_one(appname, sockfd, &exitcode))
 				return exitcode;
-		if (FD_ISSET(sockfd, &rfds))
-			if (run_socket_one(appname, sockfd, &exitcode) < 0)
+		}
+		if (FD_ISSET(sockfd, &rfds)) {
+			int exitcode;
+			if (!run_socket_one(appname, sockfd, &exitcode))
 				return exitcode;
+		}
 	}
 }
 
@@ -219,9 +224,6 @@ static void usage(const char *appname) {
 
 
 int main(int argc, char **argv) {
-	int sockfd;
-	union sockaddr_union saddr;
-
 	/* Check command line arguments. */
 	if (argc != 1 && argc != 2) {
 		usage(argv[0]);
@@ -229,6 +231,7 @@ int main(int argc, char **argv) {
 	}
 
 	/* Establish the socket path to connect to. */
+	union sockaddr_union saddr;
 	if (argc == 2) {
 		if (strlen(argv[1]) + 1 > sizeof(saddr.sun.sun_path)) {
 			errno = ENAMETOOLONG;
@@ -237,14 +240,14 @@ int main(int argc, char **argv) {
 		}
 		strcpy(saddr.sun.sun_path, argv[1]);
 	} else {
-		if (sockpath_set_default(&saddr.sun) < 0) {
+		if (!sockpath_set_default(&saddr.sun)) {
 			perror(argv[0]);
 			return EXIT_FAILURE;
 		}
 	}
 
 	/* Create a socket and connect to the server. */
-	sockfd = socket(PF_UNIX, SOCK_SEQPACKET, 0);
+	int sockfd = socket(PF_UNIX, SOCK_SEQPACKET, 0);
 	if (sockfd < 0) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
@@ -256,7 +259,7 @@ int main(int argc, char **argv) {
 	}
 
 	/* Transmit an authentication/version-negotiation packet. */
-	if (authenticate(sockfd) < 0) {
+	if (!authenticate(sockfd)) {
 		perror(argv[0]);
 		return EXIT_FAILURE;
 	}

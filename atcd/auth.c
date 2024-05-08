@@ -9,20 +9,18 @@
 
 
 static size_t allowed_count = 0, allowed_alloc = 0;
-static uid_t *allowed = 0;
+static uid_t *allowed = nullptr;
 
 
 
 /* Ensures the array is large enough to store at least one more element. */
-static int grow_array(void) {
-	size_t new_alloc;
-	uid_t *new;
-
+static bool grow_array(void) {
 	/* Check whether the array needs growing at all. */
 	if (allowed_count < allowed_alloc)
-		return 0;
+		return true;
 
 	/* Decide how much to grow the array. */
+	size_t new_alloc;
 	if (allowed_alloc == 0)
 		new_alloc = 1;
 	else if (allowed_alloc < 4)
@@ -31,54 +29,54 @@ static int grow_array(void) {
 		new_alloc = allowed_alloc * 2;
 
 	/* Grow the array. */
+	uid_t *new;
 	if (allowed)
 		new = realloc(allowed, new_alloc * sizeof(*allowed));
 	else
 		new = malloc(new_alloc * sizeof(*allowed));
 	if (!new)
-		return -1;
+		return false;
 
 	allowed = new;
 	allowed_alloc = new_alloc;
 
-	return 0;
+	return true;
 }
 
 
 
-/* Translates a string into a UID. Returns 0 on success, -1 on failure. */
-static int to_uid(const char *name, uid_t *uid) {
-	char *endptr;
-	struct passwd *pwd;
-
+/* Translates a string into a UID. Returns true on success, false on failure. */
+static bool to_uid(const char *name, uid_t *uid) {
 	/* Try first translating it numerically. */
+	char *endptr;
 	*uid = strtoul(name, &endptr, 10);
 	if (*endptr == '\0')
-		return 0;
+		return true;
 
 	/* Try translating it through /etc/passwd. */
+	struct passwd *pwd;
 	do {
 		pwd = getpwnam(name);
 	} while (!pwd && errno == EINTR);
 	if (pwd) {
 		*uid = pwd->pw_uid;
-		return 0;
+		return true;
 	}
 
-	return -1;
+	return false;
 }
 
 
 
-int auth_init(void) {
+bool auth_init(void) {
 	/* Initialize the authentication library to allow one UID by default: ourself. */
 	auth_cleanup();
 	allowed = malloc(sizeof(*allowed));
 	if (!allowed)
-		return -1;
+		return false;
 	allowed_count = allowed_alloc = 1;
 	allowed[0] = getuid();
-	return 0;
+	return true;
 }
 
 
@@ -87,58 +85,54 @@ void auth_cleanup(void) {
 	/* Deallocate the array. */
 	if (allowed) {
 		free(allowed);
-		allowed = 0;
+		allowed = nullptr;
 		allowed_count = allowed_alloc = 0;
 	}
 }
 
 
 
-int auth_add(const char *name) {
-	uid_t uid;
-
+bool auth_add(const char *name) {
 	/* Translate to UID. */
-	if (to_uid(name, &uid) < 0)
-		return -1;
+	uid_t uid;
+	if (!to_uid(name, &uid))
+		return false;
 
 	/* Add to array. */
-	if (grow_array() < 0)
-		return -1;
+	if (!grow_array())
+		return false;
 	allowed[allowed_count++] = uid;
-	return 0;
+	return true;
 }
 
 
 
-int auth_remove(const char *name) {
-	uid_t uid;
-	size_t rd, wr;
-
+bool auth_remove(const char *name) {
 	/* Translate to UID. */
-	if (to_uid(name, &uid) < 0)
-		return -1;
+	uid_t uid;
+	if (!to_uid(name, &uid))
+		return false;
 
 	/* Copy the array to itself, filtering out anything matching the target UID. */
-	for (rd = wr = 0; rd < allowed_count; rd++)
+	size_t wr = 0;
+	for (size_t rd = 0; rd < allowed_count; rd++)
 		if (allowed[rd] != uid)
 			allowed[wr++] = allowed[rd];
 	allowed_count = wr;
 
-	return 0;
+	return true;
 }
 
 
 
-int auth_check(uid_t uid) {
-	size_t i;
-
+bool auth_check(uid_t uid) {
 	/* Scan the array. */
-	for (i = 0; i < allowed_count; ++i)
+	for (size_t i = 0; i < allowed_count; ++i)
 		if (allowed[i] == uid)
-			return 0;
+			return true;
 
 	errno = EACCES;
-	return -1;
+	return false;
 }
 
 

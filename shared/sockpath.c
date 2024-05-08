@@ -4,23 +4,21 @@
 
 
 
-int sockpath_set_default(struct sockaddr_un *saddr) {
-	const char *homedir;
-
+bool sockpath_set_default(struct sockaddr_un *saddr) {
 	/* Get the home directory. */
-	homedir = getenv("HOME");
+	const char *homedir = getenv("HOME");
 	if (!homedir)
 		homedir = "/";
 
 	/* Check that homedir + "/.atcd-sock" will fit in the buffer. */
 	if (strlen(homedir) + strlen("/.atcd-sock") + 1 > sizeof(saddr->sun_path)) {
 		errno = ENAMETOOLONG;
-		return -1;
+		return false;
 	}
 
 	/* Build the path. */
 	strcpy(saddr->sun_path, homedir);
 	strcat(saddr->sun_path, "/.atcd-sock");
-	return 0;
+	return true;
 }
 
