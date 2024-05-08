@@ -280,7 +280,7 @@ static bool run_connection_once(struct connection *conn) {
 
 
 
-static int run_parent(const char *appname, int listenfd) {
+static int run_parent(int listenfd) {
 	for (;;) {
 		/* Load up all the socket FDs to select() on. */
 		fd_set rfds;
@@ -310,7 +310,7 @@ static int run_parent(const char *appname, int listenfd) {
 			if (pselect(maxfd + 1, &rfds, nullptr, nullptr, nullptr, &oldmask) >= 0)
 				break;
 			if (errno != EINTR) {
-				perror(appname);
+				perror("pselect(sockets)");
 				return EXIT_FAILURE;
 			}
 		}
@@ -395,14 +395,14 @@ static int run_parent(const char *appname, int listenfd) {
 int main(int argc, char **argv) {
 	/* Initialize the authentication library. */
 	if (!auth_init()) {
-		perror(argv[0]);
+		perror("malloc");
 		return EXIT_FAILURE;
 	}
 
 	/* Make the default socket path. */
 	union sockaddr_union saddr;
 	if (!sockpath_set_default(&saddr.sun)) {
-		perror(argv[0]);
+		perror("socket address");
 		return EXIT_FAILURE;
 	}
 
@@ -413,7 +413,7 @@ int main(int argc, char **argv) {
 			case 'S':
 				if (strlen(optarg) + 1 > sizeof(saddr.sun.sun_path)) {
 					errno = ENAMETOOLONG;
-					perror(argv[0]);
+					perror("socket address");
 					return EXIT_FAILURE;
 				}
 				strcpy(saddr.sun.sun_path, optarg);
@@ -428,19 +428,19 @@ int main(int argc, char **argv) {
 	/* Create and initialize the socket. */
 	int sockfd = socket(PF_UNIX, SOCK_SEQPACKET, 0);
 	if (sockfd < 0) {
-		perror(argv[0]);
+		perror("socket(PF_UNIX, SOCK_SEQPACKET, 0)");
 		return EXIT_FAILURE;
 	}
 	unlink(saddr.sun.sun_path);
 	saddr.sun.sun_family = AF_UNIX;
 	mode_t oldumask = umask(0);
 	if (bind(sockfd, &saddr.s, sizeof(saddr)) < 0) {
-		perror(argv[0]);
+		perror("bind");
 		return EXIT_FAILURE;
 	}
 	umask(oldumask);
 	if (listen(sockfd, 10) < 0) {
-		perror(argv[0]);
+		perror("listen");
 		return EXIT_FAILURE;
 	}
 
@@ -448,6 +448,6 @@ int main(int argc, char **argv) {
 	atcproc_set_cb(&atc_death_cb);
 
 	/* Run. */
-	return run_parent(argv[0], sockfd);
+	return run_parent(sockfd);
 }
 

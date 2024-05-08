@@ -55,26 +55,34 @@ static bool authenticate(int sockfd) {
 	cmsg->cmsg_len = CMSG_LEN(sizeof(struct ucred));
 	memcpy(CMSG_DATA(cmsg), &cred, sizeof(cred));
 
-	if (sendmsg(sockfd, &msg, MSG_NOSIGNAL | MSG_EOR) < 0)
+	if (sendmsg(sockfd, &msg, MSG_NOSIGNAL | MSG_EOR) < 0) {
+		perror("sendmsg(socket, SCM_CREDENTIALS)");
 		return false;
+	}
 
 	char buffer[1024];
 	ssize_t ret = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
-	if (ret < 0)
+	if (ret < 0) {
+		perror("recv(socket)");
 		return false;
+	}
 	if (ret == 0) {
 		errno = ECONNRESET;
+		perror("recv(socket)");
 		return false;
 	}
 	buffer[ret] = '\0';
 	if (strcmp(buffer, "MATC VERSION") == 0) {
 		errno = EPROTONOSUPPORT;
+		perror("atcd");
 		return false;
 	} else if (strcmp(buffer, "MATC ACCESS") == 0) {
 		errno = EACCES;
+		perror("atcd");
 		return false;
 	} else if (strcmp(buffer, "MATC OK") != 0) {
 		errno = EPROTONOSUPPORT;
+		perror("atcd");
 		return false;
 	}
 
@@ -83,7 +91,7 @@ static bool authenticate(int sockfd) {
 
 
 
-static bool run_stdin_one(const char *appname, int sockfd, int *exitcode) {
+static bool run_stdin_one(int sockfd, int *exitcode) {
 	/* Get a character. */
 	int ch = wgetch(inputwin);
 
@@ -98,7 +106,7 @@ static bool run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		char output = 12;
 		if (send(sockfd, &output, 1, MSG_EOR) < 0) {
 			safe_endwin();
-			perror(appname);
+			perror("send(socket)");
 			*exitcode = EXIT_FAILURE;
 			return false;
 		}
@@ -107,7 +115,7 @@ static bool run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		char output = ' ';
 		if (send(sockfd, &output, 1, MSG_EOR) < 0) {
 			safe_endwin();
-			perror(appname);
+			perror("send(socket)");
 			*exitcode = EXIT_FAILURE;
 			return false;
 		}
@@ -121,7 +129,7 @@ static bool run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 				strcat(current_input, "\n");
 			if (send(sockfd, current_input, strlen(current_input), MSG_EOR) < 0) {
 				safe_endwin();
-				perror(appname);
+				perror("send(socket)");
 				*exitcode = EXIT_FAILURE;
 				return false;
 			}
@@ -168,13 +176,13 @@ static bool run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 
 
 
-static bool run_socket_one(const char *appname, int sockfd, int *exitcode) {
+static bool run_socket_one(int sockfd, int *exitcode) {
 	/* Read the packet from the socket. */
 	char buffer[1024];
 	ssize_t ret = read(sockfd, buffer, sizeof(buffer));
 	if (ret < 0) {
 		safe_endwin();
-		perror(appname);
+		perror("read(socket)");
 		*exitcode = EXIT_FAILURE;
 		return false;
 	} else if (ret == 0) {
@@ -193,7 +201,7 @@ static bool run_socket_one(const char *appname, int sockfd, int *exitcode) {
 
 
 
-static int run(const char *appname, int sockfd) {
+static int run(int sockfd) {
 	for (;;) {
 		fd_set rfds;
 		FD_ZERO(&rfds);
@@ -201,18 +209,18 @@ static int run(const char *appname, int sockfd) {
 		FD_SET(sockfd, &rfds);
 		if (select(sockfd + 1, &rfds, nullptr, nullptr, nullptr) < 0) {
 			safe_endwin();
-			perror(appname);
+			perror("select(stdin, socket)");
 			return EXIT_FAILURE;
 		}
 
 		if (FD_ISSET(0, &rfds)) {
 			int exitcode;
-			if (!run_stdin_one(appname, sockfd, &exitcode))
+			if (!run_stdin_one(sockfd, &exitcode))
 				return exitcode;
 		}
 		if (FD_ISSET(sockfd, &rfds)) {
 			int exitcode;
-			if (!run_socket_one(appname, sockfd, &exitcode))
+			if (!run_socket_one(sockfd, &exitcode))
 				return exitcode;
 		}
 	}
@@ -238,13 +246,13 @@ int main(int argc, char **argv) {
 	if (argc == 2) {
 		if (strlen(argv[1]) + 1 > sizeof(saddr.sun.sun_path)) {
 			errno = ENAMETOOLONG;
-			perror(argv[0]);
+			perror("socket address");
 			return EXIT_FAILURE;
 		}
 		strcpy(saddr.sun.sun_path, argv[1]);
 	} else {
 		if (!sockpath_set_default(&saddr.sun)) {
-			perror(argv[0]);
+			perror("socket address");
 			return EXIT_FAILURE;
 		}
 	}
@@ -252,18 +260,17 @@ int main(int argc, char **argv) {
 	/* Create a socket and connect to the server. */
 	int sockfd = socket(PF_UNIX, SOCK_SEQPACKET, 0);
 	if (sockfd < 0) {
-		perror(argv[0]);
+		perror("socket(PF_UNIX, SOCK_SEQPACKET, 0)");
 		return EXIT_FAILURE;
 	}
 	saddr.sun.sun_family = AF_UNIX;
 	if (connect(sockfd, &saddr.s, sizeof(saddr)) < 0) {
-		perror(argv[0]);
+		perror("connect(socket)");
 		return EXIT_FAILURE;
 	}
 
 	/* Transmit an authentication/version-negotiation packet. */
 	if (!authenticate(sockfd)) {
-		perror(argv[0]);
 		return EXIT_FAILURE;
 	}
 
@@ -281,6 +288,6 @@ int main(int argc, char **argv) {
 	idlok(chatwin, 1);
 
 	/* Run the application. */
-	return run(argv[0], sockfd);
+	return run(sockfd);
 }
 

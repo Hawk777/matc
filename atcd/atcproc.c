@@ -120,7 +120,7 @@ bool atcproc_start(const char *game) {
 	else if (pid == 0) {
 		/* Child process. Copy the pipe reader to stdin. */
 		if (dup2(pipefds[0], 0) < 0) {
-			perror(nullptr);
+			perror("dup2");
 			exit(EXIT_FAILURE);
 		}
 		/* Get the number of possible FDs. */
@@ -137,7 +137,7 @@ bool atcproc_start(const char *game) {
 		else
 			execlp("atc", "atc", (const char *) nullptr);
 		/* If we got here, execlp() failed. */
-		perror(nullptr);
+		perror("execlp");
 		exit(EXIT_FAILURE);
 	} else {
 		/* Parent process. Record child PID and pipe write FD. */
