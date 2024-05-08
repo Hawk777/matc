@@ -135,8 +135,7 @@ static bool run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		if (current_input[0] != '\0') {
 			current_input[strlen(current_input) - 1] = '\0';
 			char output[2048];
-			bool terminal;
-			parse_command(current_input, output, sizeof(output), &terminal);
+			parse_command(current_input, output, sizeof(output), nullptr);
 			wprintw(inputwin, "\r%s", output);
 			wclrtoeol(inputwin);
 			wrefresh(inputwin);
@@ -155,8 +154,7 @@ static bool run_stdin_one(const char *appname, int sockfd, int *exitcode) {
 		output[0] = ch;
 		output[1] = '\0';
 		strcat(new_input, output);
-		bool terminal;
-		if (parse_command(new_input, output, sizeof(output), &terminal)) {
+		if (parse_command(new_input, output, sizeof(output), nullptr)) {
 			strcpy(current_input, new_input);
 			waddstr(inputwin, "\r");
 			waddstr(inputwin, output);

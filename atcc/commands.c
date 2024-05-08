@@ -256,7 +256,8 @@ bool parse_command(const char *readptr, char *writeptr, size_t writelen, bool *t
 	/* An empty string is actually considered acceptable and terminal. */
 	*writeptr = '\0';
 	if (readptr[0] == '\0') {
-		*terminal = true;
+		if (terminal)
+			*terminal = true;
 		return true;
 	}
 
@@ -266,7 +267,8 @@ bool parse_command(const char *readptr, char *writeptr, size_t writelen, bool *t
 			return false;
 		strcpy(writeptr, "chat: ");
 		strcat(writeptr, readptr + 1);
-		*terminal = readptr[1] != '\0';
+		if (terminal)
+			*terminal = readptr[1] != '\0';
 		return true;
 	}
 
@@ -289,7 +291,8 @@ bool parse_command(const char *readptr, char *writeptr, size_t writelen, bool *t
 	}
 
 	/* We got to the end of the input, which means we're successful. */
-	*terminal = fragptr->terminal;
+	if (terminal)
+		*terminal = fragptr->terminal;
 	return true;
 }
 
