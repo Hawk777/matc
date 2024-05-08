@@ -129,7 +129,6 @@ bool auth_check(uid_t uid) {
 		if (allowed[i] == uid)
 			return true;
 
-	errno = EACCES;
 	return false;
 }
 
