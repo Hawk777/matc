@@ -212,7 +212,7 @@ static bool run_pending_connection_once(struct connection *conn) {
 		pwd = getpwuid(cred.uid);
 	} while (!pwd && errno == EINTR);
 	if (!pwd) {
-		clprintf(CONN_DEBUG, "[server] user denied for no passwd entry: %d", cred.uid);
+		clprintf(CONN_DEBUG, "[server] user denied for no passwd entry: %ld", (long) cred.uid);
 		clputs(conn, "MATC ACCESS");
 		return false;
 	}
