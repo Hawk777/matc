@@ -1,4 +1,4 @@
-atcc/atcc: atcc/atcc.o atcc/commands.o shared/sockpath.o -lncurses
+atcc/atcc: atcc/atcc.o atcc/commands.o shared/sockpath.o
 
 atcc/atcc.o: atcc/commands.h shared/sockpath.h shared/sockaddr_union.h
 
