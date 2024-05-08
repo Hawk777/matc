@@ -167,7 +167,8 @@ static void server_command(const char *command, struct connection *conn) {
 
 static bool run_pending_connection_once(struct connection *conn) {
 	/* Receive a message. */
-	char databuf[256], auxbuf[256];
+	char databuf[256];
+	alignas (struct cmsghdr) char auxbuf[256];
 	struct iovec iov = {
 		.iov_base = databuf,
 		.iov_len = sizeof(databuf) - 1,

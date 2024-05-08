@@ -31,7 +31,7 @@ static bool authenticate(int sockfd) {
 		.iov_len = strlen("MATC 1"),
 	};
 
-	char cmsgbuf[CMSG_SPACE(sizeof(struct ucred))];
+	alignas (struct cmsghdr) char cmsgbuf[CMSG_SPACE(sizeof(struct ucred))];
 
 	struct msghdr msg = {
 		.msg_name = nullptr,
