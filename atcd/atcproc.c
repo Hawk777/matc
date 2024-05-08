@@ -181,7 +181,7 @@ bool atcproc_stop(void) {
 	int status;
 	while ((died_pid = waitpid(child_pid, &status, WNOHANG)) == 0) {
 		/* Nothing died yet. Pipe in a Y to answer the "quit now?" question. */
-		ssize_t ssz = write(pipe_write, "y", 1);
+		[[maybe_unused]] ssize_t ssz = write(pipe_write, "y", 1);
 		/* Go to sleep for a bit. */
 		usleep(100000);
 	}
