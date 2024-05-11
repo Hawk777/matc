@@ -52,16 +52,6 @@ static void atc_death_cb(void) {
 
 
 
-static inline int set_socred(int fd, int enable) {
-	int ret;
-	do {
-		ret = setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &enable, sizeof(enable));
-	} while (ret < 0 && errno == EINTR);
-	return ret;
-}
-
-
-
 static const struct connection CONN_ALL_IMPL, CONN_DEBUG_IMPL;
 static const struct connection * const CONN_ALL = &CONN_ALL_IMPL;
 static const struct connection * const CONN_DEBUG = &CONN_DEBUG_IMPL;
@@ -168,43 +158,28 @@ static void server_command(const char *command, struct connection *conn) {
 static bool run_pending_connection_once(struct connection *conn) {
 	/* Receive a message. */
 	char databuf[256];
-	alignas (struct cmsghdr) char auxbuf[256];
-	struct iovec iov = {
-		.iov_base = databuf,
-		.iov_len = sizeof(databuf) - 1,
-	};
-	struct msghdr msg = {
-		.msg_name = nullptr,
-		.msg_namelen = 0,
-		.msg_iov = &iov,
-		.msg_iovlen = 1,
-		.msg_control = auxbuf,
-		.msg_controllen = sizeof(auxbuf),
-		.msg_flags = 0,
-	};
 	ssize_t ret;
 	do {
-		ret = recvmsg(conn->fd, &msg, 0);
+		ret = recv(conn->fd, databuf, sizeof(databuf), 0);
 	} while (ret < 0 && errno == EINTR);
 	if (ret <= 0)
 		return false;
 	databuf[ret] = '\0';
 
-	/* Scan the ancillary buffer to find the passed credential structure. */
-	struct cmsghdr *cmsg;
-	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg && !(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS); cmsg = CMSG_NXTHDR(&msg, cmsg));
-	if (!cmsg) {
-		clputs(CONN_DEBUG, "[server] user denied for no credentials transmitted");
-		clputs(conn, "MATC ACCESS");
+	/* Check for an acceptable protocol version. */
+	if (strcmp(databuf, "MATC 1") != 0) {
+		clputs(CONN_DEBUG, "[server] client denied for bad protocol version");
+		clputs(conn, "MATC VERSION");
 		return false;
 	}
-	struct ucred cred;
-	memcpy(&cred, CMSG_DATA(cmsg), sizeof(cred));
 
-	/* Disable credential passing from now on. */
-	if (set_socred(conn->fd, 0) < 0) {
+	/* Get the user ID of the connecting client. */
+	struct ucred cred;
+	socklen_t credlen = sizeof(cred);
+	if (getsockopt(conn->fd, SOL_SOCKET, SO_PEERCRED, &cred, &credlen) < 0)
 		return false;
-	}
+	if (credlen != sizeof(cred))
+		return false;
 
 	/* Look up the username. */
 	struct passwd *pwd;
@@ -221,13 +196,6 @@ static bool run_pending_connection_once(struct connection *conn) {
 	if (!auth_check(cred.uid)) {
 		clprintf(CONN_DEBUG, "[server] user denied by ACL: %s", pwd->pw_name);
 		clputs(conn, "MATC ACCESS");
-		return false;
-	}
-
-	/* Check for an acceptable protocol version. */
-	if (strcmp(databuf, "MATC 1") != 0) {
-		clprintf(CONN_DEBUG, "[server] user denied for bad protocol version: %s", pwd->pw_name);
-		clputs(conn, "MATC VERSION");
 		return false;
 	}
 
@@ -362,28 +330,23 @@ static int run_parent(int listenfd) {
 				newfd = accept(listenfd, nullptr, nullptr);
 			} while (newfd < 0 && errno == EINTR);
 			if (newfd >= 0) {
-				/* Enable credential-passing. */
-				if (set_socred(newfd, 1) < 0) {
+				/* Allocate a new connection structure. */
+				struct connection *conn = malloc(sizeof(*conn));
+				if (!conn) {
 					close(newfd);
 				} else {
-					/* Allocate a new connection structure. */
-					struct connection *conn = malloc(sizeof(*conn));
-					if (!conn) {
-						close(newfd);
-					} else {
-						/* Initialize the new connection. */
-						conn->fd = newfd;
-						conn->debug = false;
-						conn->user = 0;
-						conn->username = nullptr;
+					/* Initialize the new connection. */
+					conn->fd = newfd;
+					conn->debug = false;
+					conn->user = 0;
+					conn->username = nullptr;
 
-						/* Add it to the pending list. */
-						conn->next = pending;
-						conn->prevptr = &pending;
-						pending = conn;
-						if (conn->next)
-							conn->next->prevptr = &conn->next;
-					}
+					/* Add it to the pending list. */
+					conn->next = pending;
+					conn->prevptr = &pending;
+					pending = conn;
+					if (conn->next)
+						conn->next->prevptr = &conn->next;
 				}
 			}
 		}
