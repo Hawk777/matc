@@ -57,7 +57,7 @@ static const struct connection * const CONN_ALL = &CONN_ALL_IMPL;
 static const struct connection * const CONN_DEBUG = &CONN_DEBUG_IMPL;
 static inline void clputs(const struct connection *conn, const char *string) {
 	if (conn != CONN_ALL && conn != CONN_DEBUG) {
-		while (send(conn->fd, string, strlen(string), MSG_EOR) < 0 && errno == EINTR);
+		while (send(conn->fd, string, strlen(string), MSG_NOSIGNAL | MSG_EOR) < 0 && errno == EINTR);
 	} else {
 		for (const struct connection *cur_conn = connections; cur_conn; cur_conn = cur_conn->next)
 			if (conn == CONN_ALL || cur_conn->debug)
