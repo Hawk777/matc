@@ -28,7 +28,7 @@ static void safe_endwin(void) {
 
 
 static bool authenticate(int sockfd) {
-	if (send(sockfd, "MATC 1", strlen("MATC 1"), MSG_NOSIGNAL | MSG_EOR) < 0) {
+	if (send(sockfd, "MATC 1", strlen("MATC 1"), MSG_NOSIGNAL) < 0) {
 		perror("send(socket)");
 		return false;
 	}
@@ -77,7 +77,7 @@ static bool run_stdin_one(int sockfd, int *exitcode) {
 	} else if (ch == 12) {
 		/* Control-L -> refresh screen -> send immediately */
 		char output = 12;
-		if (send(sockfd, &output, 1, MSG_NOSIGNAL | MSG_EOR) < 0) {
+		if (send(sockfd, &output, 1, MSG_NOSIGNAL) < 0) {
 			safe_endwin();
 			perror("send(socket)");
 			*exitcode = EXIT_FAILURE;
@@ -86,7 +86,7 @@ static bool run_stdin_one(int sockfd, int *exitcode) {
 	} else if (ch == ' ' && current_input[0] != '/') {
 		/* Space -> could be used at the termination of the game -> send immediately */
 		char output = ' ';
-		if (send(sockfd, &output, 1, MSG_NOSIGNAL | MSG_EOR) < 0) {
+		if (send(sockfd, &output, 1, MSG_NOSIGNAL) < 0) {
 			safe_endwin();
 			perror("send(socket)");
 			*exitcode = EXIT_FAILURE;
@@ -100,7 +100,7 @@ static bool run_stdin_one(int sockfd, int *exitcode) {
 			/* Don't send the newline for chat messages. */
 			if (current_input[0] != '/')
 				strcat(current_input, "\n");
-			if (send(sockfd, current_input, strlen(current_input), MSG_NOSIGNAL | MSG_EOR) < 0) {
+			if (send(sockfd, current_input, strlen(current_input), MSG_NOSIGNAL) < 0) {
 				safe_endwin();
 				perror("send(socket)");
 				*exitcode = EXIT_FAILURE;
