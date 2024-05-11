@@ -28,36 +28,8 @@ static void safe_endwin(void) {
 
 
 static bool authenticate(int sockfd) {
-	struct iovec iov = {
-		.iov_base = "MATC 1",
-		.iov_len = strlen("MATC 1"),
-	};
-
-	alignas (struct cmsghdr) char cmsgbuf[CMSG_SPACE(sizeof(struct ucred))];
-
-	struct msghdr msg = {
-		.msg_name = nullptr,
-		.msg_namelen = 0,
-		.msg_iov = &iov,
-		.msg_iovlen = 1,
-		.msg_control = cmsgbuf,
-		.msg_controllen = sizeof(cmsgbuf),
-		.msg_flags = 0,
-	};
-
-	struct ucred cred = {
-		.pid = getpid(),
-		.uid = getuid(),
-		.gid = getgid(),
-	};
-	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-	cmsg->cmsg_level = SOL_SOCKET;
-	cmsg->cmsg_type = SCM_CREDENTIALS;
-	cmsg->cmsg_len = CMSG_LEN(sizeof(struct ucred));
-	memcpy(CMSG_DATA(cmsg), &cred, sizeof(cred));
-
-	if (sendmsg(sockfd, &msg, MSG_NOSIGNAL | MSG_EOR) < 0) {
-		perror("sendmsg(socket, SCM_CREDENTIALS)");
+	if (send(sockfd, "MATC 1", strlen("MATC 1"), MSG_NOSIGNAL | MSG_EOR) < 0) {
+		perror("send(socket)");
 		return false;
 	}
 
