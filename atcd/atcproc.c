@@ -133,7 +133,7 @@ bool atcproc_start(const char *game) {
 		restore_sigs(&saved_mask);
 		/* Execute ATC. */
 		if (game)
-			execlp("atc", "atc", "-g", game, (const char *) nullptr);
+			execlp("atc", "atc", game, (const char *) nullptr);
 		else
 			execlp("atc", "atc", (const char *) nullptr);
 		/* If we got here, execlp() failed. */
